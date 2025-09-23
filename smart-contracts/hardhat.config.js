@@ -1,5 +1,6 @@
 // Hardhat v3 – ESM config
 import "dotenv/config";
+import "@nomicfoundation/hardhat-ethers";
 
 /** @type import('hardhat/config').HardhatUserConfig */
 const config = {

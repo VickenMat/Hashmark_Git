@@ -18,6 +18,7 @@ contract LeagueFactory {
         require(bytes(_name).length > 0, "League name is required");
         require(_teamCount > 0 && _teamCount <= 255, "Team count 1..255");
 
+        // The creator is the commissioner.
         League newLeague = new League(
             msg.sender,
             _name,

@@ -10,11 +10,10 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 /**
  * League (v2, unified settings)
  *
- * Changes vs your previous version:
- * - NEW: LeagueSettings struct + getLeagueSettings/setLeagueSettings + LeagueSettingsUpdated event
- * - NEW: version() -> 2
- * - CHANGED: teamCap is mutable (was immutable). Edits are gated & validated.
- * - Kept: all legacy reads/events & business logic (join, escrow, draft, team profiles, summary, etc.)
+ * - The creator is ALWAYS the commissioner: LeagueFactory passes msg.sender to constructor.
+ * - teamCap is mutable (validated) via setLeagueSettings.
+ * - Password join (legacy) and optional signature-gated joins supported.
+ * - Buy-in escrow supports native (AVAX) or ERC20; accounting is consistent for both.
  */
 contract League is ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -28,7 +27,7 @@ contract League is ReentrancyGuard {
     address public immutable buyInToken;
     uint256 public immutable buyInAmount;
 
-    // CHANGED: was immutable — now mutable (safe-guarded)
+    // Mutable with bounds checks
     uint256 public teamCap;
     uint256 public teamsFilled;
 
@@ -39,7 +38,8 @@ contract League is ReentrancyGuard {
 
     mapping(address => Team) public teams;
     Team[] public teamList;
-    mapping(address => uint256) public teamIndex; // 1-based index (0 => not a member)
+    // 1-based index (0 => not a member) to allow "not set" sentinel
+    mapping(address => uint256) public teamIndex;
 
     // ---------- On-chain, league-scoped team profiles ----------
     struct TeamProfile {
@@ -51,7 +51,7 @@ contract League is ReentrancyGuard {
 
     // ---------- Buy-in escrow ----------
     mapping(address => uint256) public paid;
-    uint256 public totalPaid;
+    uint256 public totalPaid; // unified counter (native or ERC20)
 
     // ---------- Password (legacy) ----------
     bytes32 public joinPasswordHash;
@@ -169,8 +169,6 @@ contract League is ReentrancyGuard {
         string logoURI,
         uint64 updatedAt
     );
-
-    // NEW
     event LeagueSettingsUpdated(LeagueSettings s);
 
     // ---------- Modifiers ----------
@@ -198,7 +196,7 @@ contract League is ReentrancyGuard {
         teamCap = _teamCount;
         createdAt = block.timestamp;
 
-        // commissioner team
+        // Create the commissioner's team (index 0; teamIndex = 1)
         Team memory initialTeam = Team({
             owner: _commissioner,
             name: "Commissioner"
@@ -214,7 +212,7 @@ contract League is ReentrancyGuard {
             updatedAt: uint64(block.timestamp)
         });
 
-        // defaults
+        // Defaults
         draftConfig = DraftConfig({
             draftType: DraftType.Snake,
             draftTimestamp: 0,
@@ -223,7 +221,7 @@ contract League is ReentrancyGuard {
         });
         draftPickTradingEnabled = false;
 
-        // unified settings defaults
+        // Unified settings defaults
         _settingsV2 = LeagueSettings({
             leagueName: _name,
             leagueLogo: "",
@@ -300,8 +298,8 @@ contract League is ReentrancyGuard {
         Team memory newTeam = Team({owner: owner, name: teamName});
         teams[owner] = newTeam;
         teamList.push(newTeam);
-        idx = teamList.length - 1;
-        teamIndex[owner] = idx + 1;
+        idx = teamList.length - 1; // 0-based index for array
+        teamIndex[owner] = idx + 1; // 1-based index for map
         teamsFilled += 1;
         emit TeamCreated(owner, teamName, idx);
 
@@ -318,7 +316,7 @@ contract League is ReentrancyGuard {
             require(msg.value >= owed, "Insufficient native amount");
             if (owed > 0) {
                 paid[payer] += owed;
-                totalPaid += owed;
+                totalPaid += owed; // keep totals consistent
                 emit BuyInReceived(payer, owed, address(0));
             }
             uint256 extra = msg.value - owed;
@@ -329,8 +327,10 @@ contract League is ReentrancyGuard {
         } else {
             require(msg.value == 0, "No native with ERC20 buy-in");
             if (owed > 0) {
+                // For fee-on-transfer tokens this might under-credit; use balance diff if you ever support those.
                 IERC20(buyInToken).safeTransferFrom(payer, address(this), owed);
                 paid[payer] += owed;
+                totalPaid += owed; // ✅ FIX: previously missing
                 emit BuyInReceived(payer, owed, buyInToken);
             }
         }
@@ -673,11 +673,11 @@ contract League is ReentrancyGuard {
         require(s.waiverClearance <= uint8(ClearanceDay.Thu), "Bad clearance");
         require(s.leagueType <= uint8(LeagueType.Dynasty), "Bad leagueType");
 
-        // apply mirrors first (authoritative)
+        // Authoritative mirrors
         name = s.leagueName;
         teamCap = uint256(s.numberOfTeams);
 
-        // store struct (other fields live only here)
+        // Store struct (other fields live only here)
         _settingsV2 = LeagueSettings({
             leagueName: s.leagueName,
             leagueLogo: s.leagueLogo,
