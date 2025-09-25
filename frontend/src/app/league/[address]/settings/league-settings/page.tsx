@@ -1,9 +1,9 @@
 // src/app/league/[address]/settings/league-settings/page.tsx
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useAccount, useReadContract } from 'wagmi';
 import CommissionerGuard from '@/components/CommissionerGuard';
 import { SaveButton, useOnchainWrite } from '@/components/OnchainForm';
@@ -56,20 +56,14 @@ const MAP = {
   leagueType: ['redraft','keeper','dynasty'] as const,
 };
 const TEAM_OPTIONS = [2,4,6,8,10,12,14,16,18,20] as const;
-const TRADE_DEADLINE_WEEKS = [0,11,12,13,14,15,16,17] as const; // 0 = None
+const TRADE_DEADLINE_WEEKS = [0,11,12,13,14,15,16,17] as const; // 0=None
 const ZERO = '0x0000000000000000000000000000000000000000' as const;
 
 /* ---------------- helpers ---------------- */
 function shortAddr(a?: string){ if(!a) return '—'; return `${a.slice(0,6)}…${a.slice(-4)}`; }
 function initials(n?: string){ const s=(n||'').trim(); if(!s) return 'TM'; const p=s.split(/\s+/); return ((p[0]?.[0]??'')+(p[1]?.[0]??'')).toUpperCase() || 'TM'; }
+const num = (v: unknown): number | undefined => { const n = Number(v); return Number.isFinite(n) ? n : undefined; };
 
-/** Prefer UI defaults if chain returns 0/None */
-const pref = (v: unknown, d: number) => {
-  const n = Number(v);
-  return Number.isFinite(n) && n !== 0 ? n : d;
-};
-
-/* small presentational bits */
 const Title = ({children}:{children:React.ReactNode}) =>
   <h2 className="text-lg font-extrabold text-white text-center">{children}</h2>;
 
@@ -78,12 +72,24 @@ function Chip({ n, active, onClick }:{ n:number; active:boolean; onClick:()=>voi
     <button
       onClick={onClick}
       className={[
-        // thinner tabs
         'rounded-xl px-3 py-1.5 text-sm font-semibold border transition',
         active ? 'bg-fuchsia-600 border-fuchsia-600 text-white' : 'bg-black/30 border-white/10 hover:border-white/40'
       ].join(' ')}
     >
       {n}
+    </button>
+  );
+}
+function Pill({ label, active, onClick }:{ label:string; active:boolean; onClick:()=>void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={[
+        'rounded-xl px-3 py-1.5 text-sm font-semibold border transition',
+        active ? 'bg-fuchsia-600 border-fuchsia-600 text-white' : 'bg-black/30 border-white/10 hover:border-white/40'
+      ].join(' ')}
+    >
+      {label}
     </button>
   );
 }
@@ -134,6 +140,7 @@ function MyTeamPill({ href, name, logo, wallet }:{
 export default function Page() {
   const { address: league } = useParams<{ address:`0x${string}` }>();
   const { address: wallet } = useAccount();
+  const router = useRouter();
 
   // My Team pill
   const { data: onChainTeamName } = useReadContract({
@@ -143,106 +150,123 @@ export default function Page() {
   const prof = useTeamProfile(league, wallet, { name: onChainTeamName as string });
   const teamName = (prof.name || (onChainTeamName as string) || '').trim() || undefined;
 
-  // Settings read
-  const { data: s } = useReadContract({ abi: SETTINGS_ABI, address: league, functionName: 'getLeagueSettings' });
+  // Settings read (+ refetch handle so UI updates post-save)
+  const { data: s, refetch: refetchSettings } = useReadContract({
+    abi: SETTINGS_ABI, address: league, functionName: 'getLeagueSettings'
+  });
+  const chainSettings = s as any;
 
   const defaults: LeagueSettingsForm = useMemo(() => {
-    const t = s as any;
+    const t = chainSettings;
+    const wtIndex = (num(t?.waiverType) ?? 0) as 0|1|2;
+    const uiWaiverType = MAP.waiverType[wtIndex];
+
+    // Default FAAB budget to $100 if on-chain is 0 AND waiver type is FAAB
+    const rawBudget = Number(t?.waiverBudget ?? 0);
+    const defaultedBudget = (uiWaiverType === 'faab' && rawBudget === 0) ? 100 : rawBudget;
+
     return {
       leagueName: (t?.leagueName ?? '') as string,
-      leagueLogo: (t?.leagueLogo ?? '') as string,
-      numberOfTeams: pref(t?.numberOfTeams, 12),
-
-      waiverType: MAP.waiverType[pref(t?.waiverType, 0) as 0|1|2],
-      waiverBudget: Number(t?.waiverBudget ?? 0),
+      leagueLogo: (t?.leagueLogo ?? '') as string, // preserved silently
+      numberOfTeams: num(t?.numberOfTeams) ?? 12,
+      waiverType: uiWaiverType,
+      waiverBudget: defaultedBudget,
       waiverMinBid: Number(t?.waiverMinBid ?? 0),
 
-      // requested UI defaults (prefer these if chain has 0/None)
-      waiversAfterDropDays: pref(t?.waiversAfterDropDays, 1) as 0|1|2|3,
-      tradeReviewDays:      pref(t?.tradeReviewDays, 1)      as 0|1|2|3,
-      tradeDeadline:        pref(t?.tradeDeadlineWeek, 12)   as (typeof TRADE_DEADLINE_WEEKS)[number],
+      waiversAfterDropDays: (num(t?.waiversAfterDropDays) ?? 1) as 0|1|2|3,
+      tradeReviewDays:      (num(t?.tradeReviewDays)      ?? 1) as 0|1|2|3,
+      tradeDeadline:        (num(t?.tradeDeadlineWeek)    ?? 12) as (typeof TRADE_DEADLINE_WEEKS)[number],
 
-      leagueType: MAP.leagueType[pref(t?.leagueType, 0) as 0|1|2],
+      leagueType: MAP.leagueType[(num(t?.leagueType) ?? 0) as 0|1|2],
 
-      // switches
+      // default toggles per request (off / on / off)
       extraGameVsMedian: Boolean(t?.extraGameVsMedian ?? false),
-      preventDropAfterKickoff: Boolean(t?.preventDropAfterKickoff ?? false),
+      preventDropAfterKickoff: Boolean(
+        typeof t?.preventDropAfterKickoff === 'boolean' ? t?.preventDropAfterKickoff : true
+      ),
       lockAllMoves: Boolean(t?.lockAllMoves ?? false),
     };
-  }, [s]);
+  }, [chainSettings]);
 
   const [form, setForm] = useState<LeagueSettingsForm>(defaults);
   const [nameLocked, setNameLocked] = useState(true);
-  const [logoPreview, setLogoPreview] = useState<string | undefined>();
-  const [uploading, setUploading] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
+
+  // Default FAAB to 100 if switching to FAAB with 0 budget
+  useEffect(() => {
+    if (form.waiverType === 'faab' && (form.waiverBudget ?? 0) === 0) {
+      setForm(f => ({ ...f, waiverBudget: 100 }));
+    }
+  }, [form.waiverType]);
 
   useEffect(() => {
     setForm(defaults);
     setNameLocked(true);
-    setLogoPreview(undefined);
   }, [defaults]);
 
   const write = useOnchainWrite();
 
   const save = async () => {
-    const argTuple = {
-      leagueName: form.leagueName,
-      leagueLogo: form.leagueLogo,
-      numberOfTeams: BigInt(form.numberOfTeams),
-      waiverType: BigInt(MAP.waiverType.indexOf(form.waiverType)),
-      waiverBudget: BigInt(form.waiverBudget || 0),
-      waiverMinBid: BigInt(form.waiverMinBid || 0),
-      waiverClearance: BigInt(0), // not surfaced here
-      waiversAfterDropDays: BigInt(form.waiversAfterDropDays || 0),
-      tradeReviewDays: BigInt(form.tradeReviewDays || 0),
-      tradeDeadlineWeek: BigInt(form.tradeDeadline || 0),
-      leagueType: BigInt(MAP.leagueType.indexOf(form.leagueType)),
-      extraGameVsMedian: !!form.extraGameVsMedian,
-      preventDropAfterKickoff: !!form.preventDropAfterKickoff,
-      lockAllMoves: !!form.lockAllMoves,
-    };
+    const preservedLogo = String(chainSettings?.leagueLogo ?? '');
+    const preservedClearance = BigInt(num(chainSettings?.waiverClearance) ?? 0);
+
+    // positional tuple in exact ABI order
+    const tupleArgs = [
+      form.leagueName,
+      preservedLogo,
+      BigInt(form.numberOfTeams),
+      BigInt(MAP.waiverType.indexOf(form.waiverType)),
+      BigInt(form.waiverBudget ?? 0),
+      BigInt(form.waiverMinBid ?? 0),
+      preservedClearance,
+      BigInt(form.waiversAfterDropDays ?? 0),
+      BigInt(form.tradeReviewDays ?? 0),
+      BigInt(form.tradeDeadline ?? 0),
+      BigInt(MAP.leagueType.indexOf(form.leagueType)),
+      !!form.extraGameVsMedian,
+      !!form.preventDropAfterKickoff,
+      !!form.lockAllMoves,
+    ] as const;
+
     await write(
-      { abi: SETTINGS_ABI, address: league, functionName: 'setLeagueSettings', args: [argTuple] },
+      { abi: SETTINGS_ABI, address: league, functionName: 'setLeagueSettings', args: [tupleArgs] },
       'Settings saved.'
     );
+
+    await refetchSettings();
+    router.refresh(); // refresh page after confirmed tx
   };
 
-  /* crude uploader: POST /api/upload-image -> { url } */
-  async function uploadImageToServer(file: File): Promise<string | undefined> {
-    const body = new FormData();
-    body.append('file', file);
-    try {
-      const res = await fetch('/api/upload-image', { method: 'POST', body });
-      if (!res.ok) throw new Error('upload failed');
-      const json = await res.json();
-      return typeof json?.url === 'string' ? json.url : undefined;
-    } catch {
-      return undefined;
-    }
-  }
+  // Reset to UI defaults (click Save to persist)
+  const resetToDefaults = () => {
+    setForm(prev => ({
+      ...prev,
+      numberOfTeams: 12,
+      waiverType: 'rolling',
+      waiverBudget: 100,
+      waiverMinBid: 0,
+      waiversAfterDropDays: 1,
+      tradeReviewDays: 1,
+      tradeDeadline: 12,
+      leagueType: 'redraft',
+      extraGameVsMedian: false,
+      preventDropAfterKickoff: true,
+      lockAllMoves: false,
+    }));
+  };
 
-  /* logo upload */
-  async function onPickLogo(e: React.ChangeEvent<HTMLInputElement>) {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    const reader = new FileReader();
-    reader.onload = () => setLogoPreview(String(reader.result));
-    reader.readAsDataURL(f);
+  const waiverDesc: Record<typeof MAP.waiverType[number], string> = {
+    rolling: 'Managers move to the back of the order after a successful claim.',
+    reverse: 'Lowest-ranked teams get priority; order re-computed from standings.',
+    faab:    'Bid with your budget; highest bid wins and is deducted from FAAB.',
+  };
 
-    setUploading(true);
-    const url = await uploadImageToServer(f);
-    setUploading(false);
-    if (url) setForm(prev => ({ ...prev, leagueLogo: url }));
-    else alert('Upload failed — make /api/upload-image return { url }');
-    e.target.value = '';
-  }
+  const isFAAB = form.waiverType === 'faab';
 
   return (
     <CommissionerGuard>
       <main className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white px-6 py-10">
         <div className="mx-auto max-w-5xl space-y-6">
-          {/* Header row */}
+          {/* Header (no league name at top) */}
           <header className="flex items-start justify-between">
             <div className="flex-1" />
             <h1 className="text-3xl font-extrabold text-center flex-1 whitespace-nowrap">League Settings</h1>
@@ -251,74 +275,71 @@ export default function Page() {
             </div>
           </header>
 
-          {/* Big container with TWO inner blocks */}
-          <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
-            {/* ── Block A: name + logo + teams + league type ── */}
-            <div className="rounded-xl border border-white/10 bg-black/20 p-5">
-              {/* Name & Logo in SAME ROW; titles inline with controls */}
-              <div className="grid gap-6 md:grid-cols-2">
-                {/* Name inline */}
-                <div className="flex flex-col items-center">
-                  <div className="flex items-center justify-center gap-3 w-full">
-                    <Title>League name</Title>
-                    <input
-                      value={form.leagueName}
-                      disabled={nameLocked}
-                      onChange={(e)=>setForm({...form, leagueName:e.target.value})}
-                      className={[
-                        'w-full max-w-xs rounded-lg bg-black/40 border p-2 text-center',
-                        nameLocked ? 'border-white/10 text-gray-400 cursor-not-allowed' : 'border-fuchsia-400/60'
-                      ].join(' ')}
-                    />
-                    <button
-                      type="button"
-                      onClick={()=>setNameLocked(v=>!v)}
-                      className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm hover:border-fuchsia-400/60"
-                    >
-                      {nameLocked ? 'Unlock' : 'Lock'}
-                    </button>
+          <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-6 space-y-6">
+            {/* Row A: League name (full row) */}
+            <div className="grid">
+              <div className="rounded-xl border border-white/10 bg-black/20 p-5 lg:col-span-3">
+                <Title>League name</Title>
+                <div className="mt-2 flex items-center justify-center gap-3">
+                  <input
+                    value={form.leagueName}
+                    disabled={nameLocked}
+                    onChange={(e)=>setForm({...form, leagueName:e.target.value})}
+                    className={[
+                      'w-full max-w-md rounded-lg bg-black/40 border p-2 text-center h-10',
+                      nameLocked ? 'border-white/10 text-gray-400 cursor-not-allowed' : 'border-fuchsia-400/60'
+                    ].join(' ')}
+                  />
+                  <button
+                    type="button"
+                    onClick={()=>setNameLocked(v=>!v)}
+                    className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm hover:border-fuchsia-400/60"
+                  >
+                    {nameLocked ? 'Unlock' : 'Lock'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Row B: Number of Teams + League type side-by-side */}
+            <div className="grid gap-6 lg:grid-cols-2">
+              {/* Number of Teams */}
+              <div className="rounded-xl border border-white/10 bg-black/20 p-5 text-center">
+                <Title>Number of <span className="capitalize">Teams</span></Title>
+
+                {/* Halfscreen: one horizontal row (unchanged) */}
+                <div className="mt-3 lg:hidden overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none]">
+                  <div className="flex gap-2 whitespace-nowrap justify-center">
+                    {TEAM_OPTIONS.map((n) => (
+                      <div key={`sm-${n}`} className="shrink-0">
+                        <Chip n={n} active={form.numberOfTeams === n} onClick={() => setForm({ ...form, numberOfTeams: n })}/>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
-                {/* Logo inline */}
-                <div className="flex flex-col items-center">
-                  <div className="flex items-center justify-center gap-3 w-full">
-                    <Title>League logo</Title>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    {(logoPreview || form.leagueLogo) ? (
-                      <img src={logoPreview || form.leagueLogo} alt="League logo" className="h-10 w-10 rounded-lg object-cover ring-1 ring-white/15" />
-                    ) : (
-                      <div className="h-10 w-10 rounded-lg bg-white/10 grid place-items-center text-[10px]">No logo</div>
-                    )}
-                    <button
-                      onClick={() => fileRef.current?.click()}
-                      className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm hover:border-fuchsia-400/60 disabled:opacity-50"
-                      disabled={uploading}
-                    >
-                      {uploading ? 'Uploading…' : 'Upload'}
-                    </button>
-                    <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPickLogo}/>
+                {/* Fullscreen: two centered rows (2–10, 12–20), tighter gaps */}
+                <div className="mt-3 hidden lg:block">
+                  <div className="grid grid-cols-5 gap-1.5 justify-items-center">
+                    {TEAM_OPTIONS.slice(0,5).map((n) => (
+                      <Chip key={`lg-top-${n}`} n={n} active={form.numberOfTeams === n} onClick={() => setForm({ ...form, numberOfTeams: n })}/>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-5 gap-1.5 justify-items-center mt-2">
+                    {TEAM_OPTIONS.slice(5).map((n) => (
+                      <Chip key={`lg-bot-${n}`} n={n} active={form.numberOfTeams === n} onClick={() => setForm({ ...form, numberOfTeams: n })}/>
+                    ))}
                   </div>
                 </div>
               </div>
 
-              {/* Teams */}
-              <div className="mt-8 text-center">
-                <Title>Number of teams</Title>
-                <div className="mt-3 flex flex-wrap justify-center gap-2">
-                  {TEAM_OPTIONS.map((n) => (
-                    <Chip key={n} n={n} active={form.numberOfTeams === n} onClick={() => setForm({ ...form, numberOfTeams: n })}/>
-                  ))}
-                </div>
-              </div>
-
-              {/* League type — thinner cards */}
-              <div className="mt-8 text-center">
+              {/* League Type */}
+              <div className="rounded-xl border border-white/10 bg-black/20 p-5 text-center">
                 <Title>League type</Title>
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div className="mt-3 grid gap-2 sm:grid-cols-3">
                   {(['redraft','keeper','dynasty'] as const).map((lt) => (
                     <label key={lt} className={[
-                      'rounded-xl border p-3 text-center cursor-pointer transition', // thinner
+                      'rounded-lg border p-2 cursor-pointer transition',
                       form.leagueType === lt ? 'border-fuchsia-500 bg-fuchsia-500/10' : 'border-white/10 bg-black/30 hover:border-white/40'
                     ].join(' ')}>
                       <input
@@ -329,10 +350,10 @@ export default function Page() {
                         onChange={()=>setForm({...form, leagueType: lt})}
                       />
                       <div className="font-semibold capitalize">{lt}</div>
-                      <div className="mt-1 text-xs text-gray-400">
+                      <div className="mt-1 text-[11px] text-gray-400">
                         {lt === 'redraft' && 'Fresh rosters each season'}
-                        {lt === 'keeper'  && 'Keep a limited number of players year to year'}
-                        {lt === 'dynasty' && 'Long-term rosters with rookie drafts'}
+                        {lt === 'keeper'  && 'Keep a limited number of players'}
+                        {lt === 'dynasty' && 'Long-term rosters; rookie drafts'}
                       </div>
                     </label>
                   ))}
@@ -340,112 +361,156 @@ export default function Page() {
               </div>
             </div>
 
-            {/* ── Block B: waivers + timers + deadline + switches ── */}
-            <div className="mt-6 rounded-xl border border-white/10 bg-black/20 p-5">
-              <div className="grid gap-8">
-                {/* Waiver type */}
-                <div className="text-center">
-                  <Title>Waiver type</Title>
+            {/* Waivers Block */}
+            <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+              <Title>Waivers</Title>
+
+              {isFAAB ? (
+                <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                  <div className="text-center">
+                    <div className="text-sm text-gray-300 mb-1">Type</div>
+                    <select
+                      value={form.waiverType}
+                      onChange={e=>setForm({...form, waiverType:e.target.value as any})}
+                      className="w-full rounded-lg bg-black/40 border border-white/10 p-2 text-center h-10"
+                    >
+                      <option value="rolling">Rolling Waivers</option>
+                      <option value="reverse">Reverse Standings</option>
+                      <option value="faab">FAAB Bidding</option>
+                    </select>
+                  </div>
+
+                  <div className="text-center">
+                    <div className="text-sm text-gray-300 mb-1">Total Budget</div>
+                    <input
+                      type="number" min={0}
+                      value={form.waiverBudget ?? 0}
+                      onChange={e=>setForm({...form, waiverBudget:Number(e.target.value)})}
+                      className="w-full rounded-lg bg-black/40 border border-white/10 p-2 text-center h-10"
+                    />
+                  </div>
+
+                  <div className="text-center">
+                    <div className="text-sm text-gray-300 mb-1">Minimum Bid</div>
+                    <input
+                      type="number" min={0}
+                      value={form.waiverMinBid ?? 0}
+                      onChange={e=>setForm({...form, waiverMinBid:Number(e.target.value)})}
+                      className="w-full rounded-lg bg-black/40 border border-white/10 p-2 text-center h-10"
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-3">
                   <select
                     value={form.waiverType}
                     onChange={e=>setForm({...form, waiverType:e.target.value as any})}
-                    className="mt-3 w-full max-w-sm mx-auto rounded-lg bg-black/40 border border-white/10 p-2 text-center"
+                    className="mx-auto block max-w-sm rounded-lg bg-black/40 border border-white/10 p-2 text-center h-10"
                   >
-                    <option className="text-center" value="rolling">Rolling waiver</option>
-                    <option className="text-center" value="reverse">Reverse standings</option>
-                    <option className="text-center" value="faab">FAAB bidding</option>
+                    <option value="rolling">Rolling Waivers</option>
+                    <option value="reverse">Reverse Standings</option>
+                    <option value="faab">FAAB Bidding</option>
                   </select>
+                </div>
+              )}
 
-                  {form.waiverType === 'faab' && (
-                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3 place-items-center">
-                      <div className="w-full max-w-xs">
-                        <div className="text-xs text-gray-400 mb-1 text-center">Waiver budget (wei)</div>
-                        <input
-                          type="number" min={0}
-                          value={form.waiverBudget ?? 0}
-                          onChange={e=>setForm({...form, waiverBudget:Number(e.target.value)})}
-                          className="w-full rounded-lg bg-black/40 border border-white/10 p-2 text-center"
+              <div className="mt-2 text-center text-[12px] text-gray-400 min-h-[1.5rem]">
+                {waiverDesc[form.waiverType]}
+              </div>
+            </div>
+
+            {/* Timers Block */}
+            <div className="rounded-xl border border-white/10 bg-black/20 p-5">
+              {/* Base/halfscreen layout unchanged; lg shows all three columns */}
+              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                <div className="text-center">
+                  <div className="text-sm text-gray-300 mb-2">Waiver Period After Cut (Days)</div>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    <Pill label="None" active={form.waiversAfterDropDays===0} onClick={()=>setForm({...form, waiversAfterDropDays:0})}/>
+                    <Pill label="1"    active={form.waiversAfterDropDays===1} onClick={()=>setForm({...form, waiversAfterDropDays:1})}/>
+                    <Pill label="2"    active={form.waiversAfterDropDays===2} onClick={()=>setForm({...form, waiversAfterDropDays:2})}/>
+                    <Pill label="3"    active={form.waiversAfterDropDays===3} onClick={()=>setForm({...form, waiversAfterDropDays:3})}/>
+                  </div>
+                </div>
+
+                <div className="text-center">
+                  <div className="text-sm text-gray-300 mb-2">Trade Review (Days)</div>
+                  <div className="flex flex-wrap justify-center gap-2">
+                    <Pill label="None" active={form.tradeReviewDays===0} onClick={()=>setForm({...form, tradeReviewDays:0})}/>
+                    <Pill label="1"    active={form.tradeReviewDays===1} onClick={()=>setForm({...form, tradeReviewDays:1})}/>
+                    <Pill label="2"    active={form.tradeReviewDays===2} onClick={()=>setForm({...form, tradeReviewDays:2})}/>
+                    <Pill label="3"    active={form.tradeReviewDays===3} onClick={()=>setForm({...form, tradeReviewDays:3})}/>
+                  </div>
+                </div>
+
+                <div className="text-center sm:col-span-2 lg:col-span-1">
+                  <div className="text-sm text-gray-300 mb-2">Trade Deadline (Week)</div>
+
+                  {/* Halfscreen: keep as-is (single row, wrapping). */}
+                  <div className="flex flex-wrap justify-center gap-2 lg:hidden">
+                    {TRADE_DEADLINE_WEEKS.map((w) => (
+                      <Pill
+                        key={`td-sm-${w}`}
+                        label={w === 0 ? 'None' : String(w)}
+                        active={form.tradeDeadline === w}
+                        onClick={()=>setForm({...form, tradeDeadline: w as (typeof TRADE_DEADLINE_WEEKS)[number]})}
+                      />
+                    ))}
+                  </div>
+
+                  {/* Fullscreen: two rows — None/11/12/13 and 14/15/16/17 */}
+                  <div className="hidden lg:block mx-auto w-full max-w-xs">
+                    <div className="grid grid-cols-4 gap-1.5 justify-items-center">
+                      {[0,11,12,13].map((w) => (
+                        <Pill
+                          key={`td-top-${w}`}
+                          label={w === 0 ? 'None' : String(w)}
+                          active={form.tradeDeadline === w}
+                          onClick={()=>setForm({...form, tradeDeadline: w as (typeof TRADE_DEADLINE_WEEKS)[number]})}
                         />
-                      </div>
-                      <div className="w-full max-w-xs">
-                        <div className="text-xs text-gray-400 mb-1 text-center">Minimum bid (wei)</div>
-                        <input
-                          type="number" min={0}
-                          value={form.waiverMinBid ?? 0}
-                          onChange={e=>setForm({...form, waiverMinBid:Number(e.target.value)})}
-                          className="w-full rounded-lg bg-black/40 border border-white/10 p-2 text-center"
-                        />
-                      </div>
+                      ))}
                     </div>
-                  )}
-                </div>
-
-                {/* Timers row */}
-                <div className="grid gap-6 md:grid-cols-3">
-                  <div className="text-center">
-                    <Title>Waivers after drop</Title>
-                    <select
-                      value={form.waiversAfterDropDays}
-                      onChange={e=>setForm({...form, waiversAfterDropDays:Number(e.target.value) as 0|1|2|3})}
-                      className="mt-3 w-full max-w-sm mx-auto rounded-lg bg-black/40 border border-white/10 p-2 text-center"
-                    >
-                      <option className="text-center" value={0}>None</option>
-                      <option className="text-center" value={1}>1 day</option>
-                      <option className="text-center" value={2}>2 days</option>
-                      <option className="text-center" value={3}>3 days</option>
-                    </select>
-                  </div>
-
-                  <div className="text-center">
-                    <Title>Trade review time</Title>
-                    <select
-                      value={form.tradeReviewDays}
-                      onChange={e=>setForm({...form, tradeReviewDays:Number(e.target.value) as 0|1|2|3})}
-                      className="mt-3 w-full max-w-sm mx-auto rounded-lg bg-black/40 border border-white/10 p-2 text-center"
-                    >
-                      <option className="text-center" value={0}>None</option>
-                      <option className="text-center" value={1}>1 day</option>
-                      <option className="text-center" value={2}>2 days</option>
-                      <option className="text-center" value={3}>3 days</option>
-                    </select>
-                  </div>
-
-                  <div className="text-center">
-                    <Title>Trade deadline</Title>
-                    <select
-                      value={form.tradeDeadline}
-                      onChange={e=>setForm({...form, tradeDeadline:Number(e.target.value) as (typeof TRADE_DEADLINE_WEEKS)[number]})}
-                      className="mt-3 w-full max-w-sm mx-auto rounded-lg bg-black/40 border border-white/10 p-2 text-center"
-                    >
-                      {TRADE_DEADLINE_WEEKS.map((w) =>
-                        w === 0 ? <option className="text-center" key="none" value={0}>None</option> :
-                        <option className="text-center" key={w} value={w}>Week {w}</option>
-                      )}
-                    </select>
-                  </div>
-                </div>
-
-                {/* Switches */}
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 p-3">
-                    <span className="text-sm text-center w-full">Extra game each week vs. median</span>
-                    <Toggle checked={!!form.extraGameVsMedian} onChange={(v)=>setForm({...form, extraGameVsMedian:v})}/>
-                  </div>
-                  <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 p-3">
-                    <span className="text-sm text-center w-full">Prevent drops after kickoff</span>
-                    <Toggle checked={!!form.preventDropAfterKickoff} onChange={(v)=>setForm({...form, preventDropAfterKickoff:v})}/>
-                  </div>
-                  <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 p-3">
-                    <span className="text-sm text-center w-full">Lock all free agent & waiver moves</span>
-                    <Toggle checked={!!form.lockAllMoves} onChange={(v)=>setForm({...form, lockAllMoves:v})}/>
+                    <div className="grid grid-cols-4 gap-1.5 justify-items-center mt-2">
+                      {[14,15,16,17].map((w) => (
+                        <Pill
+                          key={`td-bot-${w}`}
+                          label={String(w)}
+                          active={form.tradeDeadline === w}
+                          onClick={()=>setForm({...form, tradeDeadline: w as (typeof TRADE_DEADLINE_WEEKS)[number]})}
+                        />
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
+
+            {/* Switches */}
+            <div className="grid gap-6 md:grid-cols-3">
+              <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 p-3">
+                <span className="text-sm text-center w-full">Extra game each week vs. median</span>
+                <Toggle checked={!!form.extraGameVsMedian} onChange={(v)=>setForm({...form, extraGameVsMedian:v})}/>
+              </div>
+              <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 p-3">
+                <span className="text-sm text-center w-full">Prevent drops after kickoff</span>
+                <Toggle checked={!!form.preventDropAfterKickoff} onChange={(v)=>setForm({...form, preventDropAfterKickoff:v})}/>
+              </div>
+              <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/20 p-3">
+                <span className="text-sm text-center w-full">Lock all free agent & waiver moves</span>
+                <Toggle checked={!!form.lockAllMoves} onChange={(v)=>setForm({...form, lockAllMoves:v})}/>
+              </div>
+            </div>
           </section>
 
-          <div className="pt-2 text-center">
-            <SaveButton onClick={save} /> {/* label is "Save" */}
+          <div className="pt-2 flex items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={resetToDefaults}
+              className="rounded-md border border-white/10 bg-white/5 px-4 py-2 text-sm hover:border-fuchsia-400/60"
+            >
+              Reset to Defaults
+            </button>
+            <SaveButton onClick={save} />
           </div>
         </div>
       </main>

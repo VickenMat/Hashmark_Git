@@ -7,6 +7,7 @@ import { useParams } from 'next/navigation';
 import { useAccount, useReadContract } from 'wagmi';
 import CommissionerGuard from '@/components/CommissionerGuard';
 import { SaveButton, useOnchainWrite } from '@/components/OnchainForm';
+import { useTeamProfile } from '@/lib/teamProfile';
 
 const ZERO = '0x0000000000000000000000000000000000000000';
 
@@ -75,17 +76,27 @@ export default function Page() {
     args: [wallet ?? ZERO], query: { enabled: !!wallet }
   });
 
-  // reactive name when the read resolves
+  // Profile (for current logo + fallback name)
+  const prof = useTeamProfile(league, wallet, { name: onChainName as string });
+
+  // reactive name when the read resolves (prefer on-chain, fallback profile)
   const [name, setName] = useState<string>('');
-  useEffect(() => { setName(((onChainName as string) ?? '') as string); }, [onChainName]);
+  useEffect(() => {
+    const n = (onChainName as string) || prof.name || '';
+    setName(n);
+  }, [onChainName, prof.name]);
 
   const [locked, setLocked] = useState(true);
 
-  // logo: keep a preview (dataURL) and a persisted url to save on-chain
+  // logo states
   const [logoPreview, setLogoPreview] = useState<string | undefined>(undefined);
-  const [logoUrl, setLogoUrl] = useState<string>(''); // value we pass to setTeamProfile
+  const [logoUrl, setLogoUrl] = useState<string>('');       // uploaded or dataURL to save
+  const [logoRemoved, setLogoRemoved] = useState<boolean>(false); // NEW: explicit removal
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // What we currently show (if removed, show nothing)
+  const currentLogo = logoRemoved ? undefined : (logoPreview || logoUrl || prof.logo);
 
   const write = useOnchainWrite();
 
@@ -102,12 +113,15 @@ export default function Page() {
     setUploading(false);
 
     setLogoUrl(url || dataUrl); // fall back to dataURL if no backend
+    setLogoRemoved(false);      // NEW: selecting a file cancels "removed"
     e.target.value = '';
   }
 
   const save = async () => {
+    // if removed, save empty string to clear on-chain logo
+    const logoToSave = logoRemoved ? '' : (logoUrl || prof.logo || '');
     await write(
-      { abi: ABI, address: league, functionName: 'setTeamProfile', args: [name, logoUrl || ''] },
+      { abi: ABI, address: league, functionName: 'setTeamProfile', args: [name, logoToSave] },
       'Team updated.'
     );
     setLocked(true);
@@ -125,7 +139,7 @@ export default function Page() {
               <MyTeamPill
                 href={`/league/${league}/team`}
                 name={name || (onChainName as string)}
-                logo={logoPreview || logoUrl}
+                logo={currentLogo}
                 wallet={wallet}
               />
             </div>
@@ -134,10 +148,20 @@ export default function Page() {
           {/* Single centered card */}
           <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
             <div className="max-w-xl mx-auto space-y-8">
-              {/* Team name (Lock/Unlock) */}
+              {/* Team Name (shorter input, Lock/Unlock to the right) */}
               <div className="text-center">
-                <div className="flex items-center justify-center gap-3 mb-2">
-                  <div className="text-lg font-extrabold">Team name</div>
+                <div className="text-lg font-extrabold mb-2">Team Name</div>
+                <div className="flex items-center justify-center gap-3">
+                  <input
+                    value={name}
+                    disabled={locked}
+                    onChange={(e)=>setName(e.target.value)}
+                    className={[
+                      'w-72 sm:w-96 rounded-lg bg-black/40 border p-2 text-center',
+                      locked ? 'border-white/10 text-gray-400 cursor-not-allowed' : 'border-fuchsia-400/60'
+                    ].join(' ')}
+                    placeholder="Your Team Name"
+                  />
                   <button
                     onClick={() => setLocked(v => !v)}
                     className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm hover:border-fuchsia-400/60"
@@ -145,27 +169,17 @@ export default function Page() {
                     {locked ? 'Unlock' : 'Lock'}
                   </button>
                 </div>
-                <input
-                  value={name}
-                  disabled={locked}
-                  onChange={(e)=>setName(e.target.value)}
-                  className={[
-                    'w-full rounded-lg bg-black/40 border p-2 text-center',
-                    locked ? 'border-white/10 text-gray-400 cursor-not-allowed' : 'border-fuchsia-400/60'
-                  ].join(' ')}
-                  placeholder="Your team name"
-                />
               </div>
 
-              {/* Team logo (Upload) */}
+              {/* Team Logo (Upload / Remove) */}
               <div className="text-center">
-                <div className="text-lg font-extrabold mb-2">Team logo</div>
+                <div className="text-lg font-extrabold mb-2">Team Logo</div>
                 <div className="flex items-center justify-center gap-3">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  {logoPreview ? (
-                    <img src={logoPreview} alt="preview" className="h-16 w-16 rounded-xl object-cover ring-1 ring-white/15"/>
+                  {currentLogo ? (
+                    <img src={currentLogo} alt="Team Logo" className="h-16 w-16 rounded-xl object-cover ring-1 ring-white/15"/>
                   ) : (
-                    <div className="h-16 w-16 rounded-xl bg-white/10 grid place-items-center text-xs">No logo</div>
+                    <div className="h-16 w-16 rounded-xl bg-white/10 grid place-items-center text-xs">No Logo</div>
                   )}
                   <button
                     onClick={()=>fileRef.current?.click()}
@@ -175,9 +189,14 @@ export default function Page() {
                     {uploading ? 'Uploading…' : 'Upload'}
                   </button>
                   <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPickLogo}/>
-                  {logoPreview && (
+
+                  {(logoPreview || logoUrl || prof.logo) && !logoRemoved && (
                     <button
-                      onClick={()=>{ setLogoPreview(undefined); setLogoUrl(''); }}
+                      onClick={() => {
+                        setLogoPreview(undefined);
+                        setLogoUrl('');
+                        setLogoRemoved(true); // NEW: actually hide and mark for clearing on save
+                      }}
                       className="rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm hover:border-pink-400/60"
                     >
                       Remove
