@@ -8,12 +8,11 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
- * League (v2, unified settings)
+ * League (v2, unified settings + roster settings)
  *
- * - The creator is ALWAYS the commissioner: LeagueFactory passes msg.sender to constructor.
- * - teamCap is mutable (validated) via setLeagueSettings.
- * - Password join (legacy) and optional signature-gated joins supported.
- * - Buy-in escrow supports native (AVAX) or ERC20; accounting is consistent for both.
+ * - The creator is ALWAYS the commissioner.
+ * - teamCap is mutable via setLeagueSettings.
+ * - Buy-in escrow supports native (AVAX) or ERC20.
  */
 contract League is ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -142,6 +141,28 @@ contract League is ReentrancyGuard {
 
     LeagueSettings private _settingsV2;
 
+    // ---------- ROSTER SETTINGS (ADDED) ----------
+    struct RosterSettings {
+        uint8 qb;
+        uint8 rb;
+        uint8 wr;
+        uint8 te;
+        uint8 flexWRT;
+        uint8 flexWR;
+        uint8 flexWT;
+        uint8 superFlexQWRT;
+        uint8 idpFlex;
+        uint8 k;
+        uint8 dst;
+        uint8 dl;
+        uint8 lb;
+        uint8 db;
+        uint8 bench;
+        uint8 ir;
+    }
+
+    RosterSettings private _roster; // single league-wide config
+
     // ---------- Events ----------
     event TeamCreated(
         address indexed owner,
@@ -170,6 +191,7 @@ contract League is ReentrancyGuard {
         uint64 updatedAt
     );
     event LeagueSettingsUpdated(LeagueSettings s);
+    event RosterSettingsUpdated(RosterSettings s); // NEW
 
     // ---------- Modifiers ----------
     modifier onlyCommissioner() {
@@ -238,6 +260,26 @@ contract League is ReentrancyGuard {
             preventDropAfterKickoff: true,
             lockAllMoves: false
         });
+
+        // Roster settings defaults (match your UI)
+        _roster = RosterSettings({
+            qb: 1,
+            rb: 2,
+            wr: 2,
+            te: 1,
+            flexWRT: 1,
+            flexWR: 0,
+            flexWT: 0,
+            superFlexQWRT: 0,
+            idpFlex: 0,
+            k: 1,
+            dst: 1,
+            dl: 0,
+            lb: 0,
+            db: 0,
+            bench: 5,
+            ir: 1
+        });
     }
 
     // ---------- Versioning ----------
@@ -298,8 +340,8 @@ contract League is ReentrancyGuard {
         Team memory newTeam = Team({owner: owner, name: teamName});
         teams[owner] = newTeam;
         teamList.push(newTeam);
-        idx = teamList.length - 1; // 0-based index for array
-        teamIndex[owner] = idx + 1; // 1-based index for map
+        idx = teamList.length - 1;
+        teamIndex[owner] = idx + 1;
         teamsFilled += 1;
         emit TeamCreated(owner, teamName, idx);
 
@@ -316,7 +358,7 @@ contract League is ReentrancyGuard {
             require(msg.value >= owed, "Insufficient native amount");
             if (owed > 0) {
                 paid[payer] += owed;
-                totalPaid += owed; // keep totals consistent
+                totalPaid += owed;
                 emit BuyInReceived(payer, owed, address(0));
             }
             uint256 extra = msg.value - owed;
@@ -327,10 +369,9 @@ contract League is ReentrancyGuard {
         } else {
             require(msg.value == 0, "No native with ERC20 buy-in");
             if (owed > 0) {
-                // For fee-on-transfer tokens this might under-credit; use balance diff if you ever support those.
                 IERC20(buyInToken).safeTransferFrom(payer, address(this), owed);
                 paid[payer] += owed;
-                totalPaid += owed; // ✅ FIX: previously missing
+                totalPaid += owed; // keep totals consistent
                 emit BuyInReceived(payer, owed, buyInToken);
             }
         }
@@ -634,14 +675,13 @@ contract League is ReentrancyGuard {
         );
     }
 
-    // ---------- Unified settings API (NEW) ----------
+    // ---------- Unified league settings API ----------
     function getLeagueSettings()
         external
         view
         returns (LeagueSettings memory s)
     {
         s = _settingsV2;
-        // keep mirrors authoritative
         s.leagueName = name;
         s.numberOfTeams = uint8(teamCap);
     }
@@ -649,7 +689,6 @@ contract League is ReentrancyGuard {
     function setLeagueSettings(
         LeagueSettings calldata s
     ) external onlyCommissioner {
-        // validate
         require(bytes(s.leagueName).length > 0, "League name required");
         require(s.numberOfTeams > 0 && s.numberOfTeams <= 255, "Teams 1..255");
         require(
@@ -673,11 +712,9 @@ contract League is ReentrancyGuard {
         require(s.waiverClearance <= uint8(ClearanceDay.Thu), "Bad clearance");
         require(s.leagueType <= uint8(LeagueType.Dynasty), "Bad leagueType");
 
-        // Authoritative mirrors
         name = s.leagueName;
         teamCap = uint256(s.numberOfTeams);
 
-        // Store struct (other fields live only here)
         _settingsV2 = LeagueSettings({
             leagueName: s.leagueName,
             leagueLogo: s.leagueLogo,
@@ -696,6 +733,38 @@ contract League is ReentrancyGuard {
         });
 
         emit LeagueSettingsUpdated(_settingsV2);
+    }
+
+    // ---------- Roster settings API (NEW) ----------
+    function getRosterSettings()
+        external
+        view
+        returns (RosterSettings memory s)
+    {
+        s = _roster;
+    }
+
+    function setRosterSettings(
+        RosterSettings calldata s
+    ) external onlyCommissioner {
+        // Light, non-opinionated bounds so it's fully modular
+        require(
+            s.qb <= 10 && s.rb <= 10 && s.wr <= 10 && s.te <= 10,
+            "pos 0..10"
+        );
+        require(
+            s.flexWRT <= 10 &&
+                s.flexWR <= 10 &&
+                s.flexWT <= 10 &&
+                s.superFlexQWRT <= 10,
+            "flex 0..10"
+        );
+        require(s.idpFlex <= 10 && s.k <= 10 && s.dst <= 10, "misc 0..10");
+        require(s.dl <= 10 && s.lb <= 10 && s.db <= 10, "idp 0..10");
+        require(s.bench <= 50 && s.ir <= 25, "bench/ir bound");
+
+        _roster = s;
+        emit RosterSettingsUpdated(_roster);
     }
 
     receive() external payable {}

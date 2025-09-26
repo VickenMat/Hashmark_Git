@@ -12,35 +12,17 @@ import { useTeamProfile } from '@/lib/teamProfile';
 /* ------------------- Types ------------------- */
 type Address = `0x${string}`;
 
-/* ------------------- On-chain ABIs ------------------- */
-// Keep this local minimal ABI for per-league reads (or you can import from LeagueContracts if you prefer)
+/* ------------------- ABIs ------------------- */
 const LEAGUE_ABI = [
   { type: 'function', name: 'name', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
   { type: 'function', name: 'buyInAmount', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'buyInToken', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
   { type: 'function', name: 'createdAt', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   {
-    type: 'function',
-    name: 'getTeams',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [
-      {
-        type: 'tuple[]',
-        components: [
-          { name: 'owner', type: 'address' },
-          { name: 'name', type: 'string' },
-        ],
-      },
-    ],
+    type: 'function', name: 'getTeams', stateMutability: 'view', inputs: [],
+    outputs: [{ type: 'tuple[]', components: [{ name: 'owner', type: 'address' }, { name: 'name', type: 'string' }]}],
   },
-  {
-    type: 'function',
-    name: 'getDraftSettings',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ type: 'uint8' }, { type: 'uint64' }, { type: 'uint8' }, { type: 'bool' }, { type: 'address[]' }],
-  },
+  { type: 'function', name: 'getDraftSettings', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }, { type: 'uint64' }, { type: 'uint8' }, { type: 'bool' }, { type: 'address[]' }] },
   { type: 'function', name: 'teamCap', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'commissioner', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
   { type: 'function', name: 'requiresPassword', stateMutability: 'view', inputs: [], outputs: [{ type: 'bool' }] },
@@ -60,9 +42,7 @@ const readLS = <T,>(k: string, fallback: T): T => {
   }
 };
 const writeLS = <T,>(k: string, v: T) => {
-  try {
-    localStorage.setItem(k, JSON.stringify(v));
-  } catch {}
+  try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
 };
 
 function formatAvax(wei?: bigint) {
@@ -73,7 +53,6 @@ function formatAvax(wei?: bigint) {
   const fracStr = frac.toString().slice(1).slice(0, 4);
   return `${whole}.${fracStr} AVAX`;
 }
-
 const secsTo = (s: number) => {
   const f = (x: number) => Math.max(0, Math.floor(x));
   return { d: f(s / 86400), h: f((s % 86400) / 3600), m: f((s % 3600) / 60), sec: f(s % 60) };
@@ -83,150 +62,57 @@ type TeamTuple = { owner: Address; name: string };
 const toTeamArr = (v: unknown): TeamTuple[] => (Array.isArray(v) ? (v as TeamTuple[]) : []);
 
 type LeagueCardData = {
-  addr: Address;
-  name?: string;
-  buyIn?: bigint;
-  buyInToken?: Address;
-  createdAt?: number;
-  filled: number;
-  cap: number;
-  draftCompleted: boolean;
-  draftTs: number;
-  homeName: string;
-  awayName: string;
-  homeOwner?: Address;
-  awayOwner?: Address;
-  homeScore: number;
-  awayScore: number;
-  homeProj: number;
-  awayProj: number;
-  record: string;
-  isArchived: boolean;
-  isMember: boolean;
-  owed?: bigint;
-  isCommissioner: boolean;
-  passwordRequired: boolean;
-  escrowNative?: bigint;
-  escrowToken?: bigint;
-  paidCount?: number;
+  addr: Address; name?: string; buyIn?: bigint; buyInToken?: Address; createdAt?: number;
+  filled: number; cap: number; draftCompleted: boolean; draftTs: number;
+  homeName: string; awayName: string; homeOwner?: Address; awayOwner?: Address;
+  homeScore: number; awayScore: number; homeProj: number; awayProj: number; record: string;
+  isArchived: boolean; isMember: boolean; owed?: bigint; isCommissioner: boolean;
+  passwordRequired: boolean; escrowNative?: bigint; escrowToken?: bigint; paidCount?: number;
 };
 
-/* ---------- Wallet UI ---------- */
-function ConnectControlsTop() {
-  return (
-    <ConnectButton.Custom>
-      {({ account, chain, mounted, openAccountModal, openChainModal, openConnectModal }) => {
-        if (!mounted) return null;
-        if (!account) {
-          return (
-            <button onClick={openConnectModal} className="rounded-lg bg-purple-600 hover:bg-purple-700 px-4 py-2 font-semibold">
-              Connect Wallet
-            </button>
-          );
-        }
-        return (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={openChainModal}
-              className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/[0.06] px-3 py-2 text-sm hover:bg-white/10"
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              {chain?.iconUrl ? <img src={chain.iconUrl} alt={chain?.name ?? 'Chain'} className="h-4 w-4 rounded-full" /> : null}
-              <span className="truncate max-w-[120px]">{chain?.name ?? 'Select Network'}</span>
-              <span aria-hidden>▾</span>
-            </button>
-            <button
-              onClick={openAccountModal}
-              className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/[0.06] px-3 py-2 text-sm hover:bg-white/10"
-            >
-              <span className="truncate max-w-[140px]">{account?.displayName}</span>
-              {account?.displayBalance ? <span className="opacity-80">{account.displayBalance}</span> : null}
-              <span aria-hidden>▾</span>
-            </button>
-          </div>
-        );
-      }}
-    </ConnectButton.Custom>
-  );
-}
-
-/* ---------- Reorder modal ---------- */
+/* ------------------- Reorder modal ------------------- */
 function ReorderModal({
-  open,
-  onClose,
-  leagues,
-  order,
-  setOrder,
-  walletKey,
+  open, onClose, leagues, order, setOrder, walletKey,
 }: {
-  open: boolean;
-  onClose: () => void;
-  leagues: LeagueCardData[];
-  order: string[];
-  setOrder: (next: string[]) => void;
-  walletKey: string;
+  open: boolean; onClose: () => void; leagues: LeagueCardData[]; order: string[];
+  setOrder: (next: string[]) => void; walletKey: string;
 }) {
   const [list, setList] = useState<string[]>(order);
   const dragIdx = useRef<number | null>(null);
+  useEffect(() => { if (open) setList(order); }, [open, order]);
 
-  useEffect(() => {
-    if (open) setList(order);
-  }, [open, order]);
-
-  const onDragStart = (i: number) => (e: React.DragEvent) => {
-    dragIdx.current = i;
-    e.dataTransfer.effectAllowed = 'move';
-  };
+  const onDragStart = (i: number) => (e: React.DragEvent) => { dragIdx.current = i; e.dataTransfer.effectAllowed = 'move'; };
   const onDragOver = (i: number) => (e: React.DragEvent) => {
     e.preventDefault();
     const from = dragIdx.current;
     if (from === null || from === i) return;
-    const next = [...list];
-    const [m] = next.splice(from, 1);
-    next.splice(i, 0, m);
-    dragIdx.current = i;
-    setList(next);
+    const next = [...list]; const [m] = next.splice(from, 1); next.splice(i, 0, m);
+    dragIdx.current = i; setList(next);
   };
-  const onDrop = () => {
-    dragIdx.current = null;
-  };
-  const save = () => {
-    setOrder(list);
-    writeLS(walletKey, list);
-    onClose();
-  };
-
+  const save = () => { setOrder(list); writeLS(walletKey, list); onClose(); };
   if (!open) return null;
-
-  const lookup = new Map(leagues.map((l) => [l.addr, l]));
 
   return (
     <div className="fixed inset-0 z-[100]">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="absolute left-1/2 top-1/2 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-white/10 bg-gray-950 p-5 shadow-2xl">
+      <div className="absolute inset-0 bg-black/40 dark:bg-black/60" onClick={onClose} />
+      <div className="absolute left-1/2 top-1/2 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-black/10 bg-white p-5 shadow-2xl dark:border-white/10 dark:bg-gray-950">
         <div className="mb-4 flex items-center justify-between">
           <h3 className="text-lg font-semibold">Reorder Leagues</h3>
-          <button onClick={onClose} className="rounded-md bg-white/10 px-2 py-1 hover:bg-white/20">✕</button>
+          <button onClick={onClose} className="rounded-md bg-black/5 px-2 py-1 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/20">✕</button>
         </div>
         <div className="max-h-[50vh] overflow-y-auto">
           {list.map((addr, i) => (
-            <div
-              key={addr}
-              draggable
-              onDragStart={onDragStart(i)}
-              onDragOver={onDragOver(i)}
-              onDrop={onDrop}
-              className="mb-2 flex items-center gap-3 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2"
-            >
-              <div className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-white/10 text-sm">≡</div>
+            <div key={addr} draggable onDragStart={onDragStart(i)} onDragOver={onDragOver(i)}
+              className="mb-2 flex items-center gap-3 rounded-lg border border-black/10 bg-black/[0.03] px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]">
+              <div className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-black/5 text-sm dark:bg-white/10">≡</div>
               <div className="w-6 shrink-0 text-right tabular-nums text-sm">{i + 1}</div>
-              <div className="truncate text-sm">{lookup.get(addr)?.name || addr}</div>
+              <div className="truncate text-sm">{addr}</div>
             </div>
           ))}
         </div>
         <div className="mt-4 flex justify-end gap-3">
-          <button onClick={onClose} className="rounded-lg border border-white/15 px-4 py-2">Cancel</button>
-          <button onClick={save} className="rounded-lg bg-purple-600 px-4 py-2 font-semibold hover:bg-purple-700">Save</button>
+          <button onClick={onClose} className="rounded-lg border border-black/10 px-4 py-2 hover:bg-black/5 dark:border-white/15">Cancel</button>
+          <button onClick={save} className="rounded-lg bg-purple-600 px-4 py-2 font-semibold text-white hover:bg-purple-700">Save</button>
         </div>
       </div>
     </div>
@@ -241,10 +127,11 @@ export default function Home() {
   const chainId = useChainId();
   const publicClient = usePublicClient();
 
-  // Pick the correct factory for the current chain
+  // Factory
   const factory = factoryAddressForChain(chainId) as Address | undefined;
   const factoryMissing = !factory;
 
+  // Mount flag (used for showing notices/avoiding FOUC)
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
@@ -254,7 +141,7 @@ export default function Home() {
   const ARCHIVE_ONLY_KEY = `archivedOnly:${wallet ?? 'anon'}`;
   const HAD_EVER_KEY = `hadLeaguesEver:${wallet ?? 'anon'}`;
 
-  // States
+  // State
   const [archived, setArchived] = useState<string[]>(() => readLS<string[]>(ARCHIVE_KEY, []));
   const [archivedOnly, setArchivedOnly] = useState<boolean>(() => readLS<boolean>(ARCHIVE_ONLY_KEY, false));
   const [hadEver, setHadEver] = useState<boolean>(() => readLS<boolean>(HAD_EVER_KEY, false));
@@ -284,29 +171,22 @@ export default function Home() {
       if (!publicClient || !factory) return;
       try {
         const code = await publicClient.getBytecode({ address: factory });
-        // Shows 0 if not a contract
-        // eslint-disable-next-line no-console
         console.debug('[Factory bytecode length]', code?.length ?? 0, factory);
       } catch (e) {
-        // eslint-disable-next-line no-console
         console.debug('[Factory bytecode check failed]', e);
       }
     })();
   }, [publicClient, factory]);
 
   /* ------------------- Factory reads ------------------- */
-
-  // 1) Possibly empty on some deploys
   const leaguesRes = useReadContract({
     abi: LEAGUE_FACTORY_ABI,
-    // address: factory,
     address: factoryAddressForChain(chainId) as Address | undefined,
     functionName: 'getLeagues',
     chainId,
     query: { enabled: Boolean(factory), refetchInterval: 10_000 },
   });
 
-  // 2) Always safe; shows leagues you created even if you’re not yet a member
   const leaguesByCreatorRes = useReadContract({
     abi: LEAGUE_FACTORY_ABI,
     address: factory,
@@ -437,65 +317,28 @@ export default function Home() {
 
       const team0 = teams[0];
       const team1 = teams[1];
-      const n0 =
-        (team0?.name && team0.name.trim()) ||
-        (team0?.owner ? `${team0.owner.slice(0, 6)}…${team0.owner.slice(-4)}` : 'Team A');
-      const n1 =
-        (team1?.name && team1.name.trim()) ||
-        (team1?.owner ? `${team1.owner.slice(0, 6)}…${team1.owner.slice(-4)}` : 'Team B');
+      const n0 = (team0?.name && team0.name.trim()) || (team0?.owner ? `${team0.owner.slice(0, 6)}…${team0.owner.slice(-4)}` : 'Team A');
+      const n1 = (team1?.name && team1.name.trim()) || (team1?.owner ? `${team1.owner.slice(0, 6)}…${team1.owner.slice(-4)}` : 'Team B');
 
       arr.push({
-        addr: address,
-        name,
-        buyIn,
-        buyInToken,
-        createdAt,
-        filled,
-        cap,
-        draftCompleted,
-        draftTs,
-        homeName: n0,
-        awayName: n1,
-        homeOwner: team0?.owner,
-        awayOwner: team1?.owner,
-        homeScore: 0,
-        awayScore: 0,
-        homeProj: 0,
-        awayProj: 0,
-        record: '0–0',
-        isArchived: archived.includes(address),
-        isMember,
-        owed,
+        addr: address, name, buyIn, buyInToken, createdAt, filled, cap, draftCompleted, draftTs,
+        homeName: n0, awayName: n1, homeOwner: team0?.owner, awayOwner: team1?.owner,
+        homeScore: 0, awayScore: 0, homeProj: 0, awayProj: 0, record: '0–0',
+        isArchived: archived.includes(address), isMember, owed,
         isCommissioner: !!(lowerWallet && commish && lowerWallet === commish.toLowerCase()),
-        passwordRequired,
-        escrowNative,
-        escrowToken,
-        paidCount: teamPaidCounts[address] ?? 0,
+        passwordRequired, escrowNative, escrowToken, paidCount: teamPaidCounts[address] ?? 0,
       });
     });
 
     return arr;
   }, [leagueAddrs, metaRes.data, archived, wallet, teamPaidCounts]);
 
-  // SHOW: leagues you’re a member of OR you created
-  const createdByMe = useMemo<Set<string>>(() => {
-    const b = leaguesByCreatorRes.data as unknown;
-    const arrB = Array.isArray(b) ? (b as string[]) : [];
-    return new Set(arrB.map((x) => x.toLowerCase()));
-  }, [leaguesByCreatorRes.data]);
+  // Only leagues you are a member of
+  const memberOnly = useMemo(() => allLeagues.filter((l) => l.isMember), [allLeagues]);
 
-  const membershipFiltered = useMemo(
-    () => allLeagues.filter((l) => l.isMember || createdByMe.has(l.addr.toLowerCase())),
-    [allLeagues, createdByMe]
-  );
-
-  useEffect(() => {
-    if (membershipFiltered.length > 0 || archived.length > 0) setHadEver(true);
-  }, [membershipFiltered.length, archived.length]);
-
-  // Apply archived toggle + order
+  // Apply tab (Active/Archived) & order
   const filtered = useMemo(() => {
-    const base = membershipFiltered.filter((x) => (archivedOnly ? x.isArchived : !x.isArchived));
+    const base = memberOnly.filter((x) => (archivedOnly ? x.isArchived : !x.isArchived));
     const set = new Set(order);
     const withAll = [...order, ...base.map((b) => b.addr).filter((a) => !set.has(a))];
     if (withAll.length !== order.length) setOrder(withAll);
@@ -506,15 +349,12 @@ export default function Home() {
       if (ia !== ib) return ia - ib;
       return (b.createdAt ?? 0) - (a.createdAt ?? 0);
     });
-  }, [membershipFiltered, archivedOnly, order, setOrder]);
+  }, [memberOnly, archivedOnly, order, setOrder]);
 
   const hasLeagues = filtered.length > 0;
   const showPills = hadEver && (hasLeagues || archived.length > 0);
 
-  const archive = (addr: string) => {
-    setArchived((prev) => (prev.includes(addr) ? prev : [...prev, addr]));
-    setHadEver(true);
-  };
+  const archive = (addr: string) => { setArchived((prev) => (prev.includes(addr) ? prev : [...prev, addr])); setHadEver(true); };
   const restore = (addr: string) => setArchived((prev) => prev.filter((x) => x !== addr));
 
   // Carousel
@@ -524,230 +364,252 @@ export default function Home() {
   useEffect(() => {
     const m = window.matchMedia('(min-width:768px)');
     const on = () => setIsMd(m.matches);
-    on();
-    m.addEventListener('change', on);
+    on(); m.addEventListener('change', on);
     return () => m.removeEventListener('change', on);
   }, []);
   const perPage = isMd ? 2 : 1;
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage));
   const scrollToPage = (p: number) => {
-    const el = railRef.current;
-    if (!el) return;
+    const el = railRef.current; if (!el) return;
     const clamped = Math.max(0, Math.min(totalPages - 1, p));
-    el.scrollTo({ left: clamped * el.clientWidth, behavior: 'smooth' });
-    setPage(clamped);
+    el.scrollTo({ left: clamped * el.clientWidth, behavior: 'smooth' }); setPage(clamped);
   };
-  const onRailScroll = () => {
-    const el = railRef.current;
-    if (!el) return;
-    setPage(Math.round(el.scrollLeft / el.clientWidth));
-  };
+  const onRailScroll = () => { const el = railRef.current; if (el) setPage(Math.round(el.scrollLeft / el.clientWidth)); };
+  const jumpToIndex = (idx: number) => { const targetPage = Math.floor(idx / perPage); scrollToPage(targetPage); };
 
   const isFuji = chainId === 43113;
 
   return (
-    <>
-      {/* Top navbar */}
-      <header className="sticky top-0 z-40 w-full border-b border-white/10 bg-black/40 backdrop-blur">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 py-3 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2">
-            <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={24} height={24} />
-            <span className="text-lg font-semibold">Hashmark</span>
-          </Link>
-          <ConnectControlsTop />
+    <main
+      className={[
+        'relative min-h-screen overflow-hidden px-4 sm:px-6 py-8',
+        'bg-gradient-to-br from-white via-[#f8f9fb] to-white text-gray-900',
+        'dark:from-gray-950 dark:via-[#0b0b14] dark:to-black dark:text-white',
+      ].join(' ')}
+    >
+      {/* Notices */}
+      {mounted && !isFuji && (
+        <div className="mx-auto mb-4 max-w-7xl rounded-xl border border-amber-400/40 bg-amber-100/60 px-4 py-3 text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-200">
+          Switch to <span className="font-semibold">Avalanche Fuji (43113)</span> to see your leagues.
         </div>
-      </header>
+      )}
+      {mounted && factoryMissing && (
+        <div className="mx-auto mb-4 max-w-7xl rounded-xl border border-rose-400/40 bg-rose-100/60 px-4 py-3 text-rose-900 dark:border-rose-400/30 dark:bg-rose-500/10 dark:text-rose-200">
+          Factory address missing. Add <code className="font-mono">NEXT_PUBLIC_FACTORY_FUJI</code> to <b>.env.local</b>.
+        </div>
+      )}
 
-      <main className="relative min-h-screen overflow-hidden bg-gradient-to-br from-gray-950 via-[#0b0b14] to-black text-white px-4 sm:px-6 py-6 sm:py-10">
-        {/* Network guardrail */}
-        {mounted && !isFuji && (
-          <div className="mx-auto mb-4 max-w-6xl rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-amber-200">
-            You’re on a different network. Switch to <span className="font-semibold">Avalanche Fuji (43113)</span> to
-            see your leagues and interact with them.
+      {/* Subtle blobs */}
+      <div className="pointer-events-none absolute -top-24 -left-16 -z-10 h-72 w-72 rounded-full bg-fuchsia-500/10 blur-3xl dark:bg-fuchsia-500/20" />
+      <div className="pointer-events-none absolute top-10 right-0 -z-10 h-80 w-80 rounded-full bg-purple-500/10 blur-3xl dark:bg-purple-500/20" />
+
+      <div className="mx-auto max-w-7xl">
+        {/* Title + quick description */}
+        <div className="mb-6 text-center">
+          <h1 className="text-2xl font-extrabold tracking-tight">Hashmark</h1>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">The largest fantasy football platform on the blockchain.</p>
+        </div>
+
+        {/* ===== Switcher row (centered) ===== */}
+        <div className="mb-5 flex flex-wrap items-center justify-center gap-3">
+          {/* Switcher bar: only leagues in the current tab (filtered) */}
+          <div className="inline-flex max-w-full overflow-x-auto rounded-2xl border border-black/10 bg-black/[0.04] p-1 shadow-sm dark:border-white/15 dark:bg-white/5">
+            <div className="flex">
+              {filtered.map((l, i) => {
+                const visibleStart = page * perPage;
+                const visibleEnd = visibleStart + perPage - 1;
+                const active = i >= visibleStart && i <= visibleEnd;
+                return (
+                  <div key={l.addr} className="relative flex items-stretch">
+                    {/* soft mesh highlight */}
+                    <div
+                      className={`pointer-events-none absolute inset-0 rounded-xl transition-opacity duration-300 ${
+                        active ? 'opacity-60 bg-[conic-gradient(from_180deg_at_50%_50%,rgba(217,70,239,0.25)_0deg,rgba(147,51,234,0.25)_120deg,transparent_300deg)]' : 'opacity-0'
+                      }`}
+                    />
+                    <button
+                      onClick={() => jumpToIndex(i)}
+                      className={`relative z-10 max-w-[220px] truncate px-4 py-2 text-sm font-medium transition-all duration-300 ${
+                        active
+                          ? 'rounded-xl bg-white text-purple-700 shadow-sm dark:bg-white'
+                          : 'text-gray-800 hover:bg-black/[0.06] dark:text-white/90 dark:hover:bg-white/10'
+                      }`}
+                      title={l.name || l.addr}
+                    >
+                      {l.name || `${l.addr.slice(0, 6)}…${l.addr.slice(-4)}`}
+                    </button>
+                    {i < filtered.length - 1 && (
+                      <div className="my-1 w-px bg-gradient-to-b from-transparent via-black/20 to-transparent dark:via-white/20" />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* tiny reorder to the far right */}
+            <button
+              onClick={() => setModalOpen(true)}
+              className="ml-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-black/10 bg-white text-gray-900 shadow-sm hover:bg-gray-50 dark:border-white/15 dark:bg-white/10 dark:text-white"
+              title="Reorder leagues"
+              aria-label="Reorder leagues"
+            >
+              ≡
+            </button>
           </div>
-        )}
-        {/* Factory guardrail */}
-        {mounted && factoryMissing && (
-          <div className="mx-auto mb-4 max-w-6xl rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-rose-200">
-            Factory address is not set for this chain. Add <code className="font-mono">NEXT_PUBLIC_FACTORY_FUJI</code> (or the
-            appropriate chain variable) to <b>.env.local</b>.
-          </div>
-        )}
 
-        {/* blobs */}
-        <div className="pointer-events-none absolute -top-24 -left-16 -z-10 h-72 w-72 rounded-full bg-fuchsia-500/20 blur-3xl" />
-        <div className="pointer-events-none absolute top-10 right-0 -z-10 h-80 w-80 rounded-full bg-purple-500/20 blur-3xl" />
-
-        <div className="mx-auto max-w-6xl">
-          {/* Actions */}
-          <div className="mb-6 sm:mb-8 flex flex-wrap items-center justify-center gap-4">
-            <CTA href="/create-league" primary>+ Create League</CTA>
-            <CTA href="/join-league">Join League</CTA>
-          </div>
-
-          {/* Pills */}
-          <div className={`mb-6 flex items-center justify-center gap-3 transition-opacity ${mounted && showPills ? 'opacity-100' : 'pointer-events-none opacity-0'}`}>
-            <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-1 shadow-lg shadow-purple-500/10">
+          {/* Active/Archived to the RIGHT of switcher */}
+          {showPills && (
+            <div className="inline-flex rounded-full border border-black/10 bg-black/[0.04] p-1 shadow-sm dark:border-white/15 dark:bg-white/5">
               <button
-                onClick={() => setArchivedOnly(false)}
-                className={`rounded-full px-4 py-1.5 text-sm font-semibold transition ${!archivedOnly ? 'bg-white text-purple-700' : 'text-white/80 hover:text-white'}`}
+                onClick={() => scrollToPage(0) || setArchivedOnly(false)}
+                className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${
+                  !archivedOnly ? 'bg-white text-purple-700 shadow-sm dark:bg-white' : 'text-gray-700 hover:text-gray-900 dark:text-white/80 dark:hover:text-white'
+                }`}
               >
                 Active
               </button>
               <button
-                onClick={() => setArchivedOnly(true)}
-                className={`rounded-full px-4 py-1.5 text-sm font-semibold transition ${archivedOnly ? 'bg-white text-purple-700' : 'text-white/80 hover:text-white'}`}
+                onClick={() => scrollToPage(0) || setArchivedOnly(true)}
+                className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition ${
+                  archivedOnly ? 'bg-white text-purple-700 shadow-sm dark:bg-white' : 'text-gray-700 hover:text-gray-900 dark:text-white/80 dark:hover:text-white'
+                }`}
               >
                 Archived
               </button>
             </div>
-            <button onClick={() => setModalOpen(true)} className="rounded-full border border-white/15 bg-white/5 px-4 py-1.5 text-sm font-semibold hover:bg-white/10">
-              Reorder
-            </button>
-          </div>
+          )}
+        </div>
 
-          {/* Leagues */}
-          {filtered.length > 0 ? (
-            filtered.length === 1 ? (
-              <section className="mx-auto max-w-3xl">
-                <LeagueCard
-                  l={filtered[0]}
-                  now={now}
-                  archive={archive}
-                  restore={restore}
-                  archivedView={archivedOnly}
-                  walletAddr={wallet as Address | undefined}
-                />
-              </section>
-            ) : (
-              <section className="relative">
-                <div ref={railRef} onScroll={onRailScroll} className="snap-x snap-mandatory overflow-x-hidden">
-                  <div className="flex w-full">
-                    {filtered.map((l) => (
-                      <div key={l.addr} className="w-full shrink-0 snap-start px-3 md:w-1/2">
-                        <LeagueCard
-                          l={l}
-                          now={now}
-                          archive={archive}
-                          restore={restore}
-                          archivedView={archivedOnly}
-                          walletAddr={wallet as Address | undefined}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {filtered.length > (isMd ? 2 : 1) && (
-                  <>
-                    <button
-                      onClick={() => scrollToPage(page - 1)}
-                      disabled={page <= 0}
-                      className="absolute left-1 top-1/2 -translate-y-1/2 rounded-full border border-white/15 bg-white/[0.06] px-3 py-2 transition hover:bg-white/10 disabled:opacity-40"
-                      aria-label="Previous"
-                    >
-                      ‹
-                    </button>
-                    <button
-                      onClick={() => scrollToPage(page + 1)}
-                      disabled={page >= totalPages - 1}
-                      className="absolute right-1 top-1/2 -translate-y-1/2 rounded-full border border-white/15 bg-white/[0.06] px-3 py-2 transition hover:bg-white/10 disabled:opacity-40"
-                      aria-label="Next"
-                    >
-                      ›
-                    </button>
-                    <div className="mt-5 flex items-center justify-center gap-2">
-                      {Array.from({ length: totalPages }).map((_, i) => (
-                        <button
-                          key={i}
-                          onClick={() => scrollToPage(i)}
-                          className={`h-2.5 w-6 rounded-full transition ${i === page ? 'bg-gradient-to-r from-fuchsia-400 to-purple-400 shadow-[0_0_10px_rgba(217,70,239,0.6)]' : 'bg-white/25 hover:bg-white/40'}`}
-                          aria-label={`Go to page ${i + 1}`}
-                        />
-                      ))}
-                    </div>
-                  </>
-                )}
-              </section>
-            )
+        {/* ===== League dashboard ===== */}
+        {filtered.length > 0 ? (
+          filtered.length === 1 ? (
+            <section className="relative mx-auto max-w-4xl">
+              <LeagueCard
+                l={filtered[0]}
+                now={now}
+                archive={(a) => archive(a)}
+                restore={(a) => restore(a)}
+                archivedView={archivedOnly}
+                walletAddr={wallet as Address | undefined}
+              />
+            </section>
           ) : (
-            <>
-              <p className="mt-10 text-center text-gray-400">No leagues yet. Create or join to get started.</p>
-              <div className="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-                {[1, 2, 3].map((n) => (
-                  <div key={n} className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
-                    <div className="h-6 w-1/3 rounded bg-white/10" />
-                    <div className="mt-4 h-24 rounded-xl border border-white/10 bg-black/20" />
-                    <div className="mt-4 grid grid-cols-2 gap-3">
-                      <div className="h-10 rounded-xl bg-white/10" />
-                      <div className="h-10 rounded-xl bg-white/5" />
+            <section className="relative">
+              <div ref={railRef} onScroll={onRailScroll} className="snap-x snap-mandatory overflow-x-hidden">
+                <div className="flex w-full">
+                  {filtered.map((l) => (
+                    <div key={l.addr} className="w-full shrink-0 snap-start px-3 md:w-1/2">
+                      <LeagueCard
+                        l={l}
+                        now={now}
+                        archive={(a) => archive(a)}
+                        restore={(a) => restore(a)}
+                        archivedView={archivedOnly}
+                        walletAddr={wallet as Address | undefined}
+                      />
                     </div>
-                    <div className="mt-3 text-xs text-gray-400">
-                      Tip: You’ll see your leagues here after you create or join one.
-                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {filtered.length > (isMd ? 2 : 1) && (
+                <>
+                  <button
+                    onClick={() => scrollToPage(page - 1)}
+                    disabled={page <= 0}
+                    className="absolute -left-6 top-1/2 -translate-y-1/2 rounded-full border border-black/10 bg-white/90 px-3.5 py-2.5 text-lg text-gray-900 shadow-sm transition hover:bg-white disabled:opacity-40 dark:border-white/15 dark:bg-white/10 dark:text-white"
+                    aria-label="Previous"
+                  >
+                    ‹
+                  </button>
+                  <button
+                    onClick={() => scrollToPage(page + 1)}
+                    disabled={page >= totalPages - 1}
+                    className="absolute -right-6 top-1/2 -translate-y-1/2 rounded-full border border-black/10 bg-white/90 px-3.5 py-2.5 text-lg text-gray-900 shadow-sm transition hover:bg-white disabled:opacity-40 dark:border-white/15 dark:bg-white/10 dark:text-white"
+                    aria-label="Next"
+                  >
+                    ›
+                  </button>
+                </>
+              )}
+            </section>
+          )
+        ) : (
+          <section className="relative mx-auto mt-6 max-w-5xl overflow-hidden rounded-3xl border border-white/10 bg-gradient-to-br from-fuchsia-500/10 via-purple-500/5 to-transparent p-8 text-white ring-1 ring-purple-500/20 backdrop-blur-sm dark:from-white/[0.04] dark:via-white/[0.02] dark:to-transparent">
+            <div className="pointer-events-none absolute -inset-32 -z-10 rounded-[40px] bg-[conic-gradient(from_180deg_at_50%_50%,rgba(217,70,239,0.25)_0deg,rgba(147,51,234,0.25)_120deg,transparent_300deg)] blur-3xl" />
+            <div className="mx-auto max-w-3xl text-center">
+              <h2 className="text-2xl font-black tracking-tight">The largest fantasy football platform on the blockchain</h2>
+              <p className="mt-2 text-sm text-purple-100/90">
+                Build trustless leagues with escrowed buy-ins, transparent rules, and gas-light drafts. Your league, your chain.
+              </p>
+              <div className="mt-8 grid gap-4 sm:grid-cols-3">
+                {[
+                  { t: 'Step 1', h: 'Choose buy-in & team cap', d: 'AVAX token escrowed safely.' },
+                  { t: 'Step 2', h: 'Set draft time', d: 'Schedule and share the league address.' },
+                  { t: 'Step 3', h: 'Invite & play', d: 'Join (password if required), then draft.' },
+                ].map((s) => (
+                  <div key={s.t} className="flex flex-col items-center justify-center rounded-2xl border border-white/15 bg-white/10 p-4 text-center backdrop-blur">
+                    <div className="mb-1 text-xs font-semibold uppercase tracking-[0.15em] text-purple-200/90">{s.t}</div>
+                    <div className="font-semibold text-white">{s.h}</div>
+                    <div className="mt-1 text-sm text-purple-100/90">{s.d}</div>
                   </div>
                 ))}
               </div>
-              <div className="mt-10 flex items-center justify-center gap-4 text-sm text-gray-400">
-                <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1">
-                  {chainId ? `Network: ${chainId}` : 'Network: —'}
-                </span>
-                <span>Need help? You can always reach out to your league commissioner.</span>
-              </div>
-            </>
-          )}
-
-          {/* Info Boxes */}
-          <section className="mt-12">
-            <h2 className="mb-5 text-center text-lg font-bold tracking-tight text-white/90">
-              Learn more about Hashmark & Avalanche
-            </h2>
-            <div className="grid gap-5 md:grid-cols-3">
-              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
-                <div className="mb-2 text-sm uppercase tracking-[0.15em] text-purple-200/90">Platform</div>
-                <h3 className="mb-2 text-xl font-extrabold">What is Hashmark?</h3>
-                <p className="text-gray-300">
-                  Create <span className="font-semibold">on-chain fantasy leagues</span> with escrowed buy-ins, secure
-                  joins, and transparent rules.
-                </p>
-                <ul className="mt-3 list-disc pl-5 text-sm text-gray-400">
-                  <li>Native/Token buy-ins held in escrow</li>
-                  <li>Password or signature-gated joins</li>
-                  <li>Configurable draft settings &amp; orders</li>
-                </ul>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
-                <div className="mb-2 text-sm uppercase tracking-[0.15em] text-purple-200/90">Network</div>
-                <h3 className="mb-2 text-xl font-extrabold">Why Avalanche?</h3>
-                <p className="text-gray-300">
-                  Fast finality and low fees make Avalanche ideal for interactive apps. Test first on <b>Fuji</b>.
-                </p>
-                <div className="mt-3 flex flex-wrap gap-2 text-sm">
-                  <a href="https://faucet.avax.network/" target="_blank" rel="noopener noreferrer" className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 hover:bg-white/10">
-                    Get Test AVAX
-                  </a>
-                  <a href="https://testnet.snowtrace.io/" target="_blank" rel="noopener noreferrer" className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 hover:bg-white/10">
-                    Snowtrace (Testnet)
-                  </a>
-                </div>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
-                <div className="mb-2 text-sm uppercase tracking-[0.15em] text-purple-200/90">Resources</div>
-                <h3 className="mb-2 text-xl font-extrabold">Fantasy Football Links</h3>
-                <ul className="space-y-2 text-gray-300">
-                  <li><a href="https://www.fantasypros.com/nfl/" target="_blank" rel="noopener noreferrer" className="text-fuchsia-300 hover:underline">FantasyPros – Rankings &amp; Advice</a></li>
-                  <li><a href="https://www.espn.com/fantasy/football/" target="_blank" rel="noopener noreferrer" className="text-fuchsia-300 hover:underline">ESPN Fantasy Football</a></li>
-                  <li><a href="https://football.fantasysports.yahoo.com/" target="_blank" rel="noopener noreferrer" className="text-fuchsia-300 hover:underline">Yahoo Fantasy Football</a></li>
-                  <li><a href="https://sleeper.com/" target="_blank" rel="noopener noreferrer" className="text-fuchsia-300 hover:underline">Sleeper</a></li>
-                </ul>
-                <p className="mt-3 text-xs text-gray-500">External links are for research; Hashmark isn’t affiliated.</p>
-              </div>
             </div>
           </section>
+        )}
+
+        {/* ===== Create / Join (below dashboard once you have leagues) ===== */}
+        <div className="mb-10 mt-6 flex flex-wrap items-center justify-center gap-4">
+          <CTA href="/create-league" primary>+ Create League</CTA>
+          <CTA href="/join-league">Join League</CTA>
         </div>
-      </main>
+
+        {/* ===== Info boxes (your original section) ===== */}
+        <section className="mt-8">
+          <h2 className="mb-5 text-center text-lg font-bold tracking-tight text-gray-900 dark:text-white/90">
+            Learn more about Hashmark & Avalanche
+          </h2>
+          <div className="grid gap-5 md:grid-cols-3">
+            <div className="rounded-2xl border border-black/10 bg-white p-5 text-gray-900 dark:border-white/10 dark:bg-white/[0.04] dark:text-gray-200">
+              <div className="mb-2 text-sm uppercase tracking-[0.15em] text-purple-700/90 dark:text-purple-200/90">Platform</div>
+              <h3 className="mb-2 text-xl font-extrabold">What is Hashmark?</h3>
+              <p>
+                Create <span className="font-semibold">on-chain fantasy leagues</span> with escrowed buy-ins, secure joins, and transparent rules.
+              </p>
+              <ul className="mt-3 list-disc pl-5 text-sm text-gray-600 dark:text-gray-400">
+                <li>Native/Token buy-ins held in escrow</li>
+                <li>Password or signature-gated joins</li>
+                <li>Configurable draft settings &amp; orders</li>
+              </ul>
+            </div>
+            <div className="rounded-2xl border border-black/10 bg-white p-5 text-gray-900 dark:border-white/10 dark:bg:white/5 dark:bg-white/[0.04] dark:text-gray-200">
+              <div className="mb-2 text-sm uppercase tracking-[0.15em] text-purple-700/90 dark:text-purple-200/90">Network</div>
+              <h3 className="mb-2 text-xl font-extrabold">Why Avalanche?</h3>
+              <p>Fast finality and low fees make Avalanche ideal for interactive apps. Test first on <b>Fuji</b>.</p>
+              <div className="mt-3 flex flex-wrap gap-2 text-sm">
+                <a href="https://faucet.avax.network/" target="_blank" rel="noopener noreferrer" className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-gray-900 shadow-sm hover:bg-gray-50 dark:border-white/15 dark:bg-white/10 dark:text-white">
+                  Get Test AVAX
+                </a>
+                <a href="https://testnet.snowtrace.io/" target="_blank" rel="noopener noreferrer" className="rounded-lg border border-black/10 bg-white px-3 py-1.5 text-gray-900 shadow-sm hover:bg-gray-50 dark:border-white/15 dark:bg-white/10 dark:text-white">
+                  Snowtrace (Testnet)
+                </a>
+              </div>
+            </div>
+            <div className="rounded-2xl border border-black/10 bg-white p-5 text-gray-900 dark:border-white/10 dark:bg-white/[0.04] dark:text-gray-200">
+              <div className="mb-2 text-sm uppercase tracking-[0.15em] text-purple-700/90 dark:text-purple-200/90">Resources</div>
+              <h3 className="mb-2 text-xl font-extrabold">Fantasy Football Links</h3>
+              <ul className="space-y-2">
+                <li><a href="https://www.fantasypros.com/nfl/" target="_blank" rel="noopener noreferrer" className="text-fuchsia-600 hover:underline dark:text-fuchsia-300">FantasyPros – Rankings &amp; Advice</a></li>
+                <li><a href="https://www.espn.com/fantasy/football/" target="_blank" rel="noopener noreferrer" className="text-fuchsia-600 hover:underline dark:text-fuchsia-300">ESPN Fantasy Football</a></li>
+                <li><a href="https://football.fantasysports.yahoo.com/" target="_blank" rel="noopener noreferrer" className="text-fuchsia-600 hover:underline dark:text-fuchsia-300">Yahoo Fantasy Football</a></li>
+                <li><a href="https://sleeper.com/" target="_blank" rel="noopener noreferrer" className="text-fuchsia-600 hover:underline dark:text-fuchsia-300">Sleeper</a></li>
+              </ul>
+              <p className="mt-3 text-xs text-gray-500 dark:text-gray-500">External links are for research; Hashmark isn’t affiliated.</p>
+            </div>
+          </div>
+        </section>
+      </div>
 
       <ReorderModal
         open={modalOpen}
@@ -757,7 +619,7 @@ export default function Home() {
         setOrder={setOrder}
         walletKey={ORDER_KEY}
       />
-    </>
+    </main>
   );
 }
 
@@ -766,14 +628,14 @@ function CTA({ href, children, primary }: { href: string; children: React.ReactN
   return primary ? (
     <Link
       href={href}
-      className="rounded-xl bg-gradient-to-r from-fuchsia-600 to-purple-600 px-6 py-3 font-bold shadow-lg shadow-fuchsia-500/25 hover:from-fuchsia-500 hover:to-purple-500 focus:outline-none focus:ring-2 focus:ring-white/60"
+      className="rounded-xl bg-gradient-to-r from-fuchsia-600 to-purple-600 px-6 py-3 font-bold text-white shadow-lg shadow-fuchsia-500/25 hover:from-fuchsia-500 hover:to-purple-500 focus:outline-none focus:ring-2 focus:ring-fuchsia-300"
     >
       {children}
     </Link>
   ) : (
     <Link
       href={href}
-      className="rounded-xl border border-fuchsia-400/50 bg-fuchsia-500/5 px-6 py-3 font-bold text-fuchsia-200 hover:border-fuchsia-400 focus:outline-none focus:ring-2 focus:ring-fuchsia-300/50"
+      className="rounded-xl border border-black/10 bg-white px-6 py-3 font-bold text-gray-900 shadow-sm hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-black/10 dark:border-fuchsia-400/50 dark:bg-fuchsia-500/5 dark:text-fuchsia-200 dark:hover:border-fuchsia-400"
     >
       {children}
     </Link>
@@ -782,19 +644,11 @@ function CTA({ href, children, primary }: { href: string; children: React.ReactN
 
 /* ------------------- LeagueCard ------------------- */
 function LeagueCard({
-  l,
-  now,
-  archive,
-  restore,
-  archivedView,
-  walletAddr,
+  l, now, archive, restore, archivedView, walletAddr,
 }: {
-  l: LeagueCardData;
-  now: number;
-  archive: (addr: string) => void;
-  restore: (addr: string) => void;
-  archivedView: boolean;
-  walletAddr?: Address | undefined;
+  l: LeagueCardData; now: number;
+  archive: (addr: string) => void; restore: (addr: string) => void;
+  archivedView: boolean; walletAddr?: Address | undefined;
 }) {
   const draftDate = l.draftTs > 0 ? new Date(l.draftTs * 1000) : null;
   const left = Math.max(0, l.draftTs - now);
@@ -806,45 +660,42 @@ function LeagueCard({
 
   const copy = (text: string) => navigator.clipboard.writeText(text);
 
-  // Payment progress & labels
   const isFreeLeague = (l.buyIn ?? 0n) === 0n;
   const paidProgress = isFreeLeague ? l.filled : Math.min(l.paidCount ?? 0, l.filled);
   const progressPct = l.filled > 0 ? Math.round((paidProgress / l.filled) * 100) : isFreeLeague ? 100 : 0;
-
-  // Fullness (pre-draft)
   const fullnessPct = l.cap > 0 ? Math.round((l.filled / l.cap) * 100) : 0;
 
   const paymentBadge =
     !isFreeLeague && l.owed !== undefined
       ? l.owed > 0n
-        ? <span className="inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-500/10 px-2.5 py-1 text-xs">Owe {formatAvax(l.owed)}</span>
-        : <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2.5 py-1 text-xs">Paid</span>
+        ? <span className="inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-100 px-2.5 py-1 text-xs text-amber-900 dark:bg-amber-500/10 dark:text-amber-100">Owe {formatAvax(l.owed)}</span>
+        : <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-100 px-2.5 py-1 text-xs text-emerald-900 dark:bg-emerald-500/10 dark:text-emerald-100">Paid</span>
       : null;
 
   return (
-    <div className="h-[540px] rounded-2xl bg-gradient-to-b from-white/15 via-white/5 to-transparent p-[1.5px]">
-      <div className="group flex h-full flex-col rounded-2xl border border-white/10 bg-black/40 p-4 sm:p-5 shadow-2xl shadow-black/40 backdrop-blur-sm">
+    <div className="h-[500px] rounded-2xl bg-gradient-to-b from-black/[0.06] via-black/[0.03] to-transparent p-[1.5px] dark:from-white/15 dark:via-white/5 dark:to-transparent">
+      <div className="group flex h-full flex-col rounded-2xl border border-black/10 bg-white/80 p-4 text-gray-900 shadow-2xl shadow-black/5 backdrop-blur-sm dark:border-white/10 dark:bg-black/40 dark:text-white">
         {/* Name */}
-        <h3 className="mb-2 bg-gradient-to-r from-fuchsia-400 via-purple-300 to-fuchsia-400 bg-clip-text text-center text-2xl font-extrabold tracking-tight text-transparent drop-shadow-[0_1px_0_rgba(0,0,0,0.6)]">
+        <h3 className="mb-2 bg-gradient-to-r from-fuchsia-600 via-purple-600 to-fuchsia-600 bg-clip-text text-center text-2xl font-extrabold tracking-tight text-transparent dark:from-fuchsia-400 dark:via-purple-300 dark:to-fuchsia-400">
           {l.name || 'Unnamed League'}
         </h3>
 
-        {/* Addresses side-by-side */}
-        <div className="mb-3 space-y-1 text-[12px] sm:text-[13px]">
-          <div className="flex items-center justify-center gap-2">
-            <span className="shrink-0 font-semibold text-yellow-300">League Address</span>
-            <code className="max-w-full break-all font-mono text-white/90">{l.addr}</code>
-            <button onClick={() => copy(l.addr)} className="rounded-md border border-white/10 bg-white/10 px-2 py-1 text-[11px] hover:bg-white/15">
+        {/* Addresses on one line each: Label [address] Copy */}
+        <div className="mb-3 space-y-2 text-[12px] sm:text-[13px]">
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <span className="font-semibold text-yellow-700 dark:text-yellow-300">League Address</span>
+            <code className="break-all font-mono text-[11px] text-gray-900 dark:text-white/90">{l.addr}</code>
+            <button onClick={() => copy(l.addr)} className="rounded-md border border-black/10 bg-black/5 px-2 py-1 text-[11px] hover:bg-black/10 dark:border-white/10 dark:bg-white/10 dark:hover:bg-white/15">
               Copy
             </button>
           </div>
-          <div className="flex items-center justify-center gap-2">
-            <span className="shrink-0 font-semibold text-blue-400">Wallet Address</span>
-            <code className="max-w-full break-all font-mono text-white/90">{walletAddr ?? '—'}</code>
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <span className="font-semibold text-blue-700 dark:text-blue-400">Wallet Address</span>
+            <code className="break-all font-mono text-[11px] text-gray-900 dark:text-white/90">{walletAddr ?? '—'}</code>
             <button
               onClick={() => walletAddr && copy(walletAddr)}
               disabled={!walletAddr}
-              className="rounded-md border border-white/10 bg-white/10 px-2 py-1 text-[11px] hover:bg-white/15 disabled:opacity-40"
+              className="rounded-md border border-black/10 bg-black/5 px-2 py-1 text-[11px] hover:bg-black/10 disabled:opacity-40 dark:border-white/10 dark:bg-white/10 dark:hover:bg-white/15"
             >
               Copy
             </button>
@@ -854,71 +705,61 @@ function LeagueCard({
         {/* Chips */}
         <div className="mb-2 flex flex-wrap items-center justify-center gap-2 text-xs">
           {paymentBadge}
-          {l.isCommissioner && <span className="rounded-full border border-purple-400/40 bg-purple-500/10 px-2 py-1 text-purple-200">Commissioner</span>}
-          {l.passwordRequired && <span className="rounded-full border border-white/15 bg-white/10 px-2 py-1">Password required</span>}
-          {l.escrowNative !== undefined && <span className="rounded-full border border-white/15 bg-white/10 px-2 py-1">Escrow: {formatAvax(l.escrowNative)}</span>}
+          {l.isCommissioner && <span className="rounded-full border border-purple-400/40 bg-purple-100 px-2 py-1 text-purple-800 dark:bg-purple-500/10 dark:text-purple-200">Commissioner</span>}
+          {l.passwordRequired && <span className="rounded-full border border-black/10 bg-black/5 px-2 py-1 text-gray-800 dark:border-white/15 dark:bg-white/10 dark:text-white">Password required</span>}
+          {l.escrowNative !== undefined && <span className="rounded-full border border-black/10 bg-black/5 px-2 py-1 text-gray-800 dark:border-white/15 dark:bg-white/10 dark:text-white">Escrow: {formatAvax(l.escrowNative)}</span>}
         </div>
 
-        {/* Payments progress */}
-        <div className="mx-auto mb-3 w-full max-w-md">
-          <div className="mb-1 flex items-center justify-between text-[11px] text-gray-400">
+        {/* Payments & Teams */}
+        <div className="mx-auto mb-5 w-full max-w-md">
+          <div className="mb-1 flex items-center justify-between text-[12px] font-semibold text-gray-700 dark:text-gray-300">
             <span>Payments</span>
-            <span>{isFreeLeague ? 'Free' : `${paidProgress}/${l.filled} (${progressPct}%)`}</span>
+            <span className="font-bold">{isFreeLeague ? 'Free' : `${paidProgress}/${l.filled} (${progressPct}%)`}</span>
           </div>
-          <div className="h-2 w-full rounded-full bg-white/10">
-            <div
-              className={`h-2 rounded-full ${isFreeLeague ? 'bg-emerald-400' : 'bg-gradient-to-r from-emerald-400 to-emerald-500'}`}
-              style={{ width: `${isFreeLeague ? 100 : progressPct}%` }}
-            />
+          <div className="h-2 w-full rounded-full bg-black/10 dark:bg-white/10">
+            <div className={`h-2 rounded-full ${isFreeLeague ? 'bg-emerald-500' : 'bg-gradient-to-r from-emerald-400 to-emerald-500'}`} style={{ width: `${isFreeLeague ? 100 : progressPct}%` }} />
           </div>
 
-          {/* Teams fullness (pre-draft only) */}
-          {preDraft && (
-            <div className="mt-2">
-              <div className="mb-1 flex items-center justify-between text-[11px] text-gray-400">
+          {!l.draftCompleted && (
+            <div className="mt-3">
+              <div className="mb-1 flex items-center justify-between text-[12px] font-semibold text-gray-700 dark:text-gray-300">
                 <span>Teams</span>
-                <span>{l.filled}/{l.cap} ({fullnessPct}%)</span>
+                <span className="font-bold">{l.filled}/{l.cap} ({fullnessPct}%)</span>
               </div>
-              <div className="h-2 w-full rounded-full bg-white/10">
+              <div className="h-2 w-full rounded-full bg-black/10 dark:bg-white/10">
                 <div className="h-2 rounded-full bg-gradient-to-r from-sky-400 to-blue-500" style={{ width: `${fullnessPct}%` }} />
               </div>
             </div>
           )}
         </div>
 
-        {/* Meta */}
-        <div className="mb-3 space-x-4 text-center text-xs sm:text-sm text-gray-300">
-          <span><span className="text-gray-400">Buy-In:</span> {formatAvax(l.buyIn)}</span>
-          <span><span className="text-gray-400">Teams:</span> {l.filled}/{l.cap}</span>
-        </div>
-
-        {/* Main content */}
-        <div className="min-h-[150px] rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.05] to-white/[0.02] p-4">
+        {/* Content */}
+        <div className="mt-1 min-h-[150px] rounded-2xl border border-black/10 bg-gradient-to-br from-purple-200/30 via-fuchsia-200/20 to-white/40 p-4 dark:border-white/10 dark:from-white/[0.05] dark:via-white/[0.03] dark:to-white/[0.02]">
           {!l.draftCompleted ? (
             <>
-              <div className="mb-0 text-center text-[11px] uppercase tracking-[0.2em] text-purple-200/80">Draft</div>
+              <div className="mb-0 text-center text-[11px] uppercase tracking-[0.2em] text-purple-800 dark:text-purple-200/80">Draft</div>
               {draftDate ? (
                 <>
-                  <div className="mt-2 text-center text-lg font-extrabold">
+                  <div className="mt-2 text-center text-lg font-extrabold text-gray-900 dark:text-white">
                     {draftDate.toLocaleDateString()} • {draftDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </div>
                   {l.draftTs > now ? (
                     <div className="mt-3 grid grid-cols-4 gap-2">
                       {([['Days', t.d], ['Hrs', t.h], ['Min', t.m], ['Sec', t.sec]] as const).map(([label, val]) => (
-                        <div key={label} className="rounded-xl bg-gradient-to-b from-purple-500/15 to-fuchsia-500/10 px-3 py-2 text-center ring-1 ring-purple-400/30">
-                          <div className="text-xl font-black tabular-nums">{val}</div>
-                          <div className="text-[10px] text-purple-200/90">{label}</div>
+                        <div key={label} className="rounded-xl bg-black/[0.04] px-3 py-2 text-center ring-1 ring-black/10 dark:bg-white/10 dark:ring-white/15">
+                          <div className="text-xl font-black tabular-nums text-gray-900 dark:text-white">{val}</div>
+                          <div className="text-[10px] text-gray-700 dark:text-gray-300">{label}</div>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <div className="mt-2 text-center font-semibold text-green-400">Draft window open</div>
+                    <div className="mt-2 text-center font-semibold text-green-700 dark:text-green-400">Draft window open</div>
                   )}
                 </>
               ) : (
                 <div className="text-center">
-                  <div className="text-gray-300 text-lg font-semibold">Draft not scheduled</div>
-                  <div className="mt-2 space-y-1 text-sm text-gray-300">
+                  <div className="text-lg font-semibold text-gray-800 dark:text-gray-300">Draft not scheduled</div>
+                  <div className="mt-2 space-y-1 text-sm text-gray-700 dark:text-gray-300">
                     <p>Set your draft time in Draft Settings</p>
                     <p>Invite users by sending the <span className="font-semibold">League Address</span> above and the <span className="font-semibold">password</span> (if set)</p>
                   </div>
@@ -927,12 +768,12 @@ function LeagueCard({
             </>
           ) : (
             <>
-              <div className="mb-2 text-center text-[11px] uppercase tracking-[0.2em] text-purple-200/80">Matchup</div>
-              <Link href={`/league/${l.addr}/scoreboard`} className="group block w-full rounded-xl border border-white/10 bg-black/30 p-4 transition hover:border-fuchsia-400/60" title="Open Scoreboard">
+              <div className="mb-2 text-center text-[11px] uppercase tracking-[0.2em] text-purple-800 dark:text-purple-200/80">Matchup</div>
+              <Link href={`/league/${l.addr}/scoreboard`} className="group block w-full rounded-xl border border-black/10 bg-white/70 p-4 transition hover:border-fuchsia-400/60 dark:border-white/10 dark:bg-black/30" title="Open Scoreboard">
                 <div className="grid grid-cols-3 items-center">
                   <Side name={homeProf.name || l.homeName} score={l.homeScore} proj={l.homeProj} ytp={9} />
                   <div className="flex items-center justify-center">
-                    <div className="grid h-8 w-8 place-items-center rounded-full border border-white/15 bg-white/10 text-xs text-white/80">VS</div>
+                    <div className="grid h-8 w-8 place-items-center rounded-full border border-black/10 bg-white text-xs text-gray-700 dark:border-white/15 dark:bg-white/10 dark:text-white/80">VS</div>
                   </div>
                   <Side name={awayProf.name || l.awayName} score={l.awayScore} proj={l.awayProj} ytp={9} />
                 </div>
@@ -943,25 +784,19 @@ function LeagueCard({
 
         {/* Actions */}
         <div className="mt-3 flex gap-2">
-          <Link href={`/league/${l.addr}/my-team`} className="flex-1 rounded-xl bg-gradient-to-r from-fuchsia-600 to-purple-600 px-3 py-2 text-center font-semibold shadow-lg shadow-fuchsia-500/20 hover:from-fuchsia-500 hover:to-purple-500 focus:outline-none focus:ring-2 focus:ring-white/60">
+          <Link href={`/league/${l.addr}/my-team`} className="flex-1 rounded-xl bg-gradient-to-r from-fuchsia-600 to-purple-600 px-3 py-2 text-center font-semibold text-white shadow-lg shadow-fuchsia-500/20 hover:from-fuchsia-500 hover:to-purple-500">
             My Team
           </Link>
-
-          {/* PERMISSIONS:
-              - Pre-draft & Commissioner => "Draft Settings"
-              - Pre-draft & NOT Commissioner => "Enter League"
-              - Post-draft (everyone) => "League"
-          */}
           {l.draftCompleted ? (
-            <Link href={`/league/${l.addr}`} className="flex-1 rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-center font-semibold text-gray-200 hover:border-purple-400/60 focus:outline-none focus:ring-2 focus:ring-white/40">
+            <Link href={`/league/${l.addr}`} className="flex-1 rounded-xl border border-black/10 bg-white px-3 py-2 text-center font-semibold text-gray-900 shadow-sm hover:bg-gray-50 dark:border-white/15 dark:bg-white/5 dark:text-gray-200 dark:hover:border-purple-400/60">
               League
             </Link>
           ) : l.isCommissioner ? (
-            <Link href={`/league/${l.addr}/settings/draft-settings`} className="flex-1 rounded-xl border border-fuchsia-400/50 bg-fuchsia-500/5 px-3 py-2 text-center font-semibold text-fuchsia-200 hover:border-fuchsia-400 focus:outline-none focus:ring-2 focus:ring-fuchsia-300/50">
+            <Link href={`/league/${l.addr}/settings/draft-settings`} className="flex-1 rounded-xl border border-fuchsia-400/50 bg-fuchsia-500/5 px-3 py-2 text-center font-semibold text-fuchsia-700 hover:border-fuchsia-400 dark:text-fuchsia-200">
               Draft Settings
             </Link>
           ) : (
-            <Link href={`/league/${l.addr}`} className="flex-1 rounded-xl border border-fuchsia-400/50 bg-fuchsia-500/5 px-3 py-2 text-center font-semibold text-fuchsia-200 hover:border-fuchsia-400 focus:outline-none focus:ring-2 focus:ring-fuchsia-300/50">
+            <Link href={`/league/${l.addr}`} className="flex-1 rounded-xl border border-fuchsia-400/50 bg-fuchsia-500/5 px-3 py-2 text-center font-semibold text-fuchsia-700 hover:border-fuchsia-400 dark:text-fuchsia-200">
               Enter League
             </Link>
           )}
@@ -969,9 +804,9 @@ function LeagueCard({
 
         {/* Foot links */}
         <div className="mt-2 mb-6 flex items-center justify-center gap-5 text-xs">
-          {!archivedView && <button className="text-red-400 hover:underline" onClick={() => archive(l.addr)}>Archive</button>}
-          {archivedView && <button className="text-blue-400 hover:underline" onClick={() => restore(l.addr)}>Restore</button>}
-          <a href={`https://testnet.snowtrace.io/address/${l.addr}`} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:text-blue-300 hover:underline">
+          {!archivedView && <button className="text-red-700 hover:underline dark:text-red-400" onClick={() => archive(l.addr)}>Archive</button>}
+          {archivedView && <button className="text-blue-700 hover:underline dark:text-blue-400" onClick={() => restore(l.addr)}>Restore</button>}
+          <a href={`https://testnet.snowtrace.io/address/${l.addr}`} target="_blank" rel="noopener noreferrer" className="text-blue-700 hover:text-blue-600 hover:underline dark:text-blue-400">
             Snowtrace →
           </a>
         </div>
@@ -980,14 +815,13 @@ function LeagueCard({
   );
 }
 
-/* Small helper for scoreboard card */
 function Side({ name, score, proj, ytp }: { name: string; score: number; proj: number; ytp: number }) {
   return (
     <div className="px-2 text-center">
       <div className="break-words font-semibold leading-tight">{name}</div>
       <div className="mt-1 text-3xl font-black tabular-nums">{score}</div>
-      <div className="mt-1 text-[11px] text-gray-400">Proj {proj}</div>
-      <div className="text-[11px] text-gray-400">Yet to Play {ytp}</div>
+      <div className="mt-1 text-[11px] text-gray-600 dark:text-gray-400">Proj {proj}</div>
+      <div className="text-[11px] text-gray-600 dark:text-gray-400">Yet to Play {ytp}</div>
     </div>
   );
 }

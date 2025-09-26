@@ -5,7 +5,6 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import React, { useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { useAccount, useReadContract, useChainId, useConfig } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 
@@ -13,86 +12,107 @@ function cx(...c: (string | boolean | undefined)[]) { return c.filter(Boolean).j
 function stripSlash(s: string) { return s.replace(/\/+$/, ''); }
 function shortAddr(a?: string){ return a ? `${a.slice(0,6)}…${a.slice(-4)}` : ''; }
 
-const MenuIcon = (props: React.SVGProps<SVGSVGElement>) => (
-  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" {...props}>
+/* Icons */
+const MenuIcon   = (p: React.SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" {...p}>
     <path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M3 12h18M3 18h18" />
   </svg>
 );
-
-const ChevronDown = (props: React.SVGProps<SVGSVGElement>) => (
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" {...props}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
+const ChevronDown= (p: React.SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" {...p}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6"/>
+  </svg>
+);
+const ArrowLeft  = (p: React.SVGProps<SVGSVGElement>) => (
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" {...p}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7"/>
   </svg>
 );
 
-const LEAGUE_ABI = [
-  { type: 'function', name: 'name', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
-  { type: 'function', name: 'commissioner', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
-] as const;
+/* Theme */
+type Theme = 'light' | 'dark';
+function applyTheme(t: Theme) {
+  const r = document.documentElement;
+  t === 'dark' ? r.classList.add('dark') : r.classList.remove('dark');
+  try { localStorage.setItem('theme', t); } catch {}
+}
+function useTheme(): [Theme, (t: Theme) => void] {
+  const [theme, setTheme] = useState<Theme>('dark');
+  useEffect(() => {
+    let next: Theme = 'dark';
+    try {
+      const s = localStorage.getItem('theme');
+      if (s === 'light' || s === 'dark') next = s as Theme;
+      else if (window.matchMedia?.('(prefers-color-scheme: light)').matches) next = 'light';
+    } catch {}
+    setTheme(next); applyTheme(next);
+  }, []);
+  return [theme, (t) => { setTheme(t); applyTheme(t); }];
+}
+function ThemeToggleSmall({ className }: { className?: string }) {
+  const [theme, setTheme] = useTheme();
+  return (
+    <button
+      onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+      aria-label="Toggle theme"
+      className={cx(
+        'inline-flex h-8 w-8 items-center justify-center rounded-md border text-sm transition',
+        'border-black/10 bg-white text-gray-900 hover:bg-gray-50',
+        'dark:border-white/15 dark:bg-white/10 dark:text-white dark:hover:bg-white/15',
+        className
+      )}
+    >
+      {theme === 'dark'
+        ? <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor"><path d="M12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        : <svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor"><path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 1 0 9.79 9.79Z"/></svg>}
+    </button>
+  );
+}
 
-/* ---------- Wallet controls (stacked pills) ---------- */
-function ConnectControls() {
+/* ===== TOP BAR connect: network (white), AVAX balance pill, account ===== */
+function TopConnect() {
   return (
     <ConnectButton.Custom>
-      {({
-        account,
-        chain,
-        mounted,
-        openAccountModal,
-        openChainModal,
-        openConnectModal,
-      }) => {
-        const ready = mounted;
-        if (!ready) return null;
+      {({ account, chain, mounted, openAccountModal, openChainModal, openConnectModal }) => {
+        if (!mounted) return null;
+
+        const netLabel =
+          chain?.id === 43113 ? 'FUJI'
+          : chain?.id === 43114 ? 'Avalanche'
+          : (chain?.name ?? 'Select Network');
 
         if (!account) {
           return (
             <button
               onClick={openConnectModal}
-              className="w-full rounded-2xl bg-gradient-to-r from-fuchsia-600 to-purple-600 px-4 py-2 font-semibold shadow-[0_8px_24px_-10px_rgba(168,85,247,0.7)] hover:brightness-110"
+              className="rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-sm text-white hover:bg-white/15"
             >
-              Connect Wallet
+              Connect
             </button>
           );
         }
 
         return (
-          <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2">
             <button
               onClick={openChainModal}
-              className="w-full inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.06] px-3 py-2 hover:bg-white/[0.12] transition"
-              aria-label="Select network"
+              className="rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-sm text-white hover:bg-white/15"
             >
-              {chain?.iconUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={chain.iconUrl} alt={chain?.name ?? 'Chain'} className="h-5 w-5 rounded-full" />
-              ) : (
-                <span className="inline-block h-5 w-5 rounded-full bg-white/40" />
-              )}
-              <span className="truncate text-sm font-medium">{chain?.name ?? 'Select Network'}</span>
-              <span className="ml-auto opacity-80">
-                <ChevronDown />
-              </span>
+              {netLabel}
             </button>
+
+            {account.displayBalance && (
+              <div className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/10 px-2.5 py-1.5 text-sm text-white">
+                <Image src="/avalanche-avax-logo.svg" alt="AVAX" width={14} height={14} />
+                <span className="tabular-nums">{account.displayBalance}</span>
+              </div>
+            )}
 
             <button
               onClick={openAccountModal}
-              className="w-full inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.06] px-3 py-2 hover:bg-white/[0.12] transition"
-              aria-label="Account"
+              className="rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-sm text-white/90 hover:text-white hover:bg-white/15"
             >
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm font-medium leading-5">
-                  {account?.displayName}
-                </div>
-              </div>
-              {account?.displayBalance ? (
-                <span className="ml-2 shrink-0 rounded-md bg-white/10 px-2 py-0.5 text-xs opacity-90">
-                  {account.displayBalance}
-                </span>
-              ) : null}
-              <span className="ml-2 shrink-0 opacity-80">
-                <ChevronDown />
-              </span>
+              {account.displayName}
             </button>
           </div>
         );
@@ -101,17 +121,79 @@ function ConnectControls() {
   );
 }
 
-/* Parse /league/<addr>/matchup/<id> into lowercased team addrs if present */
-function parseMatchupFromPath(path: string) {
-  const m = path.match(/\/matchup\/([^/?#]+)/);
+/* ===== SIDE BAR connect: combined 'Network + Address' pill (styled) ===== */
+function ConnectControls() {
+  return (
+    <ConnectButton.Custom>
+      {({ account, chain, mounted, openAccountModal, openChainModal, openConnectModal }) => {
+        if (!mounted) return null;
+
+        const netLabel =
+          chain?.id === 43113 ? 'FUJI'
+          : chain?.id === 43114 ? 'Avalanche'
+          : (chain?.name ?? 'Network');
+
+        if (!account) {
+          return (
+            <button
+              onClick={openConnectModal}
+              className="w-full rounded-xl bg-gradient-to-r from-fuchsia-600 to-purple-600 px-3 py-2 font-semibold text-white shadow-[0_8px_24px_-10px_rgba(168,85,247,0.7)] hover:brightness-110"
+            >
+              Connect Wallet
+            </button>
+          );
+        }
+
+        // Styled split-control pill: left = Network chip, right = address; subtle divider + focus states
+        return (
+          <div
+            className="group w-full rounded-xl border border-white/10 bg-white/5 px-2 py-1.5 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] flex items-center gap-2"
+          >
+            <button
+              onClick={openChainModal}
+              aria-label="Select network"
+              className="shrink-0 inline-flex items-center rounded-md border border-white/10 bg-white/10 px-2 py-0.5 text-[11px] font-medium leading-5 tracking-wide uppercase text-white/90 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+            >
+              {netLabel}
+            </button>
+
+            <span aria-hidden className="h-4 w-px bg-white/10" />
+
+            <button
+              onClick={openAccountModal}
+              aria-label="Account"
+              title={account?.address}
+              className="ml-auto truncate text-sm opacity-95 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 rounded"
+            >
+              {account.displayName}
+            </button>
+          </div>
+        );
+      }}
+    </ConnectButton.Custom>
+  );
+}
+
+/* On-chain reads */
+const LEAGUE_ABI = [
+  { type:'function', name:'name', stateMutability:'view', inputs:[], outputs:[{type:'string'}] },
+  { type:'function', name:'commissioner', stateMutability:'view', inputs:[], outputs:[{type:'address'}] },
+] as const;
+
+function parseMatchupFromPath(p: string) {
+  const m = p.match(/\/matchup\/([^/?#]+)/);
   if (!m) return null;
   try {
-    const decoded = decodeURIComponent(m[1]);
-    const [week, away, home] = decoded.split(':');
-    if (!week || !away || !home) return null;
-    return { id: m[1], week, away: away.toLowerCase(), home: home.toLowerCase() };
+    const [w, a, h] = decodeURIComponent(m[1]).split(':');
+    if (!w || !a || !h) return null;
+    return { id: m[1], week: w, away: a.toLowerCase(), home: h.toLowerCase() };
   } catch { return null; }
 }
+
+/* Dimensions */
+const SIDEBAR_W = 208;
+const SKINNY_W  = 48;
+const OUT_BTN_GAP = 8;
 
 export default function Navbar() {
   const pathname = usePathname() || '/';
@@ -125,43 +207,43 @@ export default function Navbar() {
   const leagueAddress = (match?.[1] as `0x${string}` | undefined);
   const base = leagueAddress ? `/league/${leagueAddress}` : undefined;
 
-  // Read league name + commissioner (for tab visibility)
-  const { data: leagueNameData } = useReadContract({
-    abi: LEAGUE_ABI, address: leagueAddress, functionName: 'name',
-    query: { enabled: Boolean(leagueAddress) },
-  });
-  const { data: commissionerData } = useReadContract({
-    abi: LEAGUE_ABI, address: leagueAddress, functionName: 'commissioner',
-    query: { enabled: Boolean(leagueAddress) },
-  });
+  const { data: leagueNameData } = useReadContract({ abi: LEAGUE_ABI, address: leagueAddress, functionName: 'name', query: { enabled: Boolean(leagueAddress) }});
+  const { data: commissionerData } = useReadContract({ abi: LEAGUE_ABI, address: leagueAddress, functionName: 'commissioner', query: { enabled: Boolean(leagueAddress) }});
 
   const leagueName  = (leagueNameData as string | undefined)?.trim();
   const leagueShort = leagueAddress ? shortAddr(leagueAddress) : 'League';
   const isCommissioner = !!(wallet && commissionerData && wallet.toLowerCase() === String(commissionerData).toLowerCase());
-
   const myTeamHref = leagueAddress && wallet ? `${base}/team/${wallet}` : `${base}/my-team`;
 
-  /* --------- Matchup link: only cache if matchup includes my wallet --------- */
+  /* Hydration-safe UI state */
+  const [hydrated, setHydrated] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+  const [overlayMode, setOverlayMode] = useState(false);
+  useEffect(() => {
+    setHydrated(true);
+    try { setCollapsed(localStorage.getItem('hm:navCollapsed') === '1'); } catch {}
+    const onResize = () => setOverlayMode(window.innerWidth < 1024);
+    onResize(); window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  useEffect(() => { try { localStorage.setItem('hm:navCollapsed', collapsed ? '1' : '0'); } catch {} }, [collapsed]);
+
+  /* Matchup cache */
   const [matchupHref, setMatchupHref] = useState<string | null>(null);
   const cacheKey = React.useMemo(
     () => (leagueAddress && wallet) ? `hashmark:lastMatchup:${leagueAddress}:${wallet.toLowerCase()}` : null,
     [leagueAddress, wallet]
   );
-
   const readCached = React.useCallback(() => {
     if (!cacheKey) return null;
     try { return localStorage.getItem(cacheKey); } catch { return null; }
   }, [cacheKey]);
-
   useEffect(() => {
     if (!base) { setMatchupHref(null); return; }
     setMatchupHref(readCached() || `${base}/scoreboard`);
   }, [base, readCached]);
-
-  // Re-sync when the route changes.
   useEffect(() => {
     if (!leagueAddress || !wallet || !base) return;
-
     const parsed = parseMatchupFromPath(pathname);
     if (parsed) {
       const me = wallet.toLowerCase();
@@ -172,30 +254,10 @@ export default function Navbar() {
         return;
       }
     }
-    // Otherwise, refresh from cache (updated by Scoreboard/Matchup)
     const saved = readCached();
     if (saved && saved !== matchupHref) setMatchupHref(saved);
   }, [pathname, leagueAddress, wallet, base, cacheKey, readCached, matchupHref]);
 
-  // Listen for same-tab updates
-  useEffect(() => {
-    if (!cacheKey) return;
-    const onUpdated = (e: Event) => {
-      const d = (e as CustomEvent).detail || {};
-      if (!wallet || !leagueAddress) return;
-      if (String(d.league).toLowerCase() !== String(leagueAddress).toLowerCase()) return;
-      if (String(d.owner).toLowerCase() !== wallet.toLowerCase()) return;
-      if (typeof d.href === 'string') setMatchupHref(d.href);
-    };
-    // @ts-ignore
-    window.addEventListener('hashmark:lastMatchupUpdated', onUpdated as EventListener);
-    return () => {
-      // @ts-ignore
-      window.removeEventListener('hashmark:lastMatchupUpdated', onUpdated as EventListener);
-    };
-  }, [cacheKey, leagueAddress, wallet]);
-
-  /* -------- Orders you requested -------- */
   const leagueMenu = useMemo(() => !leagueAddress || !base ? [] : [
     { label: 'Members',         href: `${base}/members` },
     { label: 'Rosters',         href: `${base}/rosters` },
@@ -208,15 +270,13 @@ export default function Navbar() {
   const mainTabs = useMemo(() => {
     if (!leagueAddress || !base) return [];
     const tabs = [
-      { key: 'my-team',   label: 'My Team',   href: myTeamHref },
-      { key: 'matchup',   label: 'Matchup',   href: matchupHref || `${base}/scoreboard` },
-      { key: 'scoreboard',label: 'Scoreboard',href: `${base}/scoreboard` },
-      { key: 'standings', label: 'Standings', href: `${base}/standings` },
-      { key: 'settings',  label: 'Settings',  href: `${base}/settings` },
+      { key: 'my-team',   label: 'My Team',    href: myTeamHref },
+      { key: 'matchup',   label: 'Matchup',    href: matchupHref || `${base}/scoreboard` },
+      { key: 'scoreboard',label: 'Scoreboard', href: `${base}/scoreboard` },
+      { key: 'standings', label: 'Standings',  href: `${base}/standings` },
+      { key: 'settings',  label: 'Settings',   href: `${base}/settings` },
     ];
-    if (isCommissioner) {
-      tabs.push({ key: 'lm-tools', label: 'LM Tools', href: `${base}/lm-tools` });
-    }
+    if (isCommissioner) tabs.push({ key: 'lm-tools', label: 'LM Tools', href: `${base}/lm-tools` });
     return tabs;
   }, [leagueAddress, base, myTeamHref, matchupHref, isCommissioner]);
 
@@ -233,148 +293,143 @@ export default function Navbar() {
     return undefined;
   }, [pathname, leagueAddress, base]);
 
-  const [open, setOpen] = useState(false);
-  const [leagueOpen, setLeagueOpen] = useState(false);
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  /* Home top bar (Hashmark bigger previously) */
+  const onHome = !leagueAddress;
+  if (onHome) {
+    return (
+      <header className="sticky top-0 z-40 w-full border-b border-transparent bg-transparent backdrop-blur">
+        <div className="mx-auto max-w-6xl flex items-center justify-between px-4 sm:px-6 py-3">
+          <Link href="/" className="flex items-center gap-2">
+            <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={24} height={24} />
+            <span className="text-2xl font-semibold">Hashmark</span>
+          </Link>
+          <div className="flex items-center gap-2">
+            <ThemeToggleSmall />
+            <TopConnect />
+          </div>
+        </div>
+      </header>
+    );
+  }
 
-  useEffect(() => {
-    const mq = window.matchMedia('(min-width: 1024px)');
-    const handler = () => setOpen(false);
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  }, []);
+  /* Collapsed rail (TRANSPARENT) */
+  if (hydrated && collapsed) {
+    return (
+      <>
+        <aside
+          className="fixed left-0 top-0 bottom-0 z-40 text-gray-900 dark:text-white bg-transparent border-none"
+          style={{ width: SKINNY_W }}
+          aria-label="Collapsed sidebar"
+        >
+          <div className="flex h-full flex-col items-center py-3 gap-3">
+            <button
+              className="mt-1 inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/15 bg-white/10 text-white hover:text-gray-300 hover:bg-white/10"
+              aria-label="Open sidebar"
+              onClick={() => setCollapsed(false)}
+            >
+              <MenuIcon />
+            </button>
+            <Link href="/" title="Home">
+              <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={24} height={24} />
+            </Link>
+            <div className="mt-auto mb-2">
+              <ThemeToggleSmall />
+            </div>
+          </div>
+        </aside>
+      </>
+    );
+  }
 
-  useEffect(() => {
-    const cls = 'has-vertical-sidebar';
-    if (leagueAddress) document.body.classList.add(cls);
-    else document.body.classList.remove(cls);
-    return () => document.body.classList.remove(cls);
-  }, [leagueAddress]);
-
-  const item    = 'block w-full px-5 py-2 text-[15px] font-medium text-gray-100 hover:text-white hover:bg-white/5 rounded-md';
-  const divider = 'my-3 mx-4 border-t border-white/10';
+  /* Expanded sidebar (OPAQUE DARK GRAY) */
+  const item    = 'block w-full px-3 py-1.5 text-[14px] rounded-md transition text-gray-200 hover:bg-white/6 hover:text-white';
+  const itemActive = 'bg-white/10 text-white';
 
   return (
     <>
-      {leagueAddress && (
-        <button
-          className="lg:hidden fixed left-3 top-3 z-[200] rounded-xl bg-black/40 backdrop-blur border border-white/10 p-2 text-white hover:bg-black/60"
-          aria-label="Open menu"
-          aria-expanded={open}
-          onClick={() => setOpen(true)}
-        >
-          <MenuIcon />
-        </button>
-      )}
+      <aside
+        className="fixed left-0 top-0 bottom-0 z-50 text-white"
+        style={{ width: SIDEBAR_W, backgroundColor: '#1c2128' }} // dark gray
+        aria-label="Sidebar"
+      >
+        <div className="flex h-full flex-col px-4 pt-5 pb-3">
+          {/* Brand (flush with tabs) */}
+          <Link href="/" className="flex items-center gap-2 mb-3 pl-3">
+            <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={24} height={24} />
+            <span className="text-2xl font-semibold leading-none">Hashmark</span>
+          </Link>
 
-      {mounted && leagueAddress && open && createPortal(
-        <>
-          <div className="fixed inset-0 z-[2147483645] bg-black/60" onClick={() => setOpen(false)} />
-          <aside
-            className="fixed left-0 top-0 bottom-0 z-[2147483646] w-56 bg-[#0d1117] text-white border-r border-white/5 shadow-xl overflow-y-auto"
-            role="dialog"
-            aria-modal="true"
-          >
-            <Link href="/" onClick={() => setOpen(false)} className="flex items-center gap-3 px-5 pt-5">
-              <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={28} height={28} />
-              <span className="text-2xl font-semibold leading-none">Hashmark</span>
-            </Link>
+          {/* Combined network + address pill (styled) */}
+          <div className="mb-2"><ConnectControls /></div>
 
-            <div className="px-5 pt-4"><ConnectControls /></div>
-
-            <div className="px-5 pt-3 pb-4">
-              <Link href={`${base}`} onClick={() => setOpen(false)} className="text-lg font-extrabold tracking-tight hover:text-white/90">
-                {leagueName || leagueShort}
-              </Link>
-            </div>
-
-            <button
-              onClick={() => setLeagueOpen(o => o ^ true)}
-              className="w-full px-4 py-3 text-xs tracking-widest text-gray-400 hover:bg-white/5 text-left relative"
+          {/* League title (pill, clickable) */}
+          <div className="pb-1">
+            <Link
+              href={base!}
+              className="block rounded-md px-3 py-1.5 text-[14px] font-extrabold tracking-tight text-white/90 hover:bg-white/10 hover:text-white"
             >
-              <span className={cx('absolute right-4 top-1/2 -translate-y-1/2 transition-transform', leagueOpen ? 'rotate-180' : '')}>▾</span>
-              LEAGUE
-            </button>
-            {leagueOpen && (
-              <div className="px-2">
-                {leagueMenu.map((m) => (
-                  <Link key={m.href} href={m.href} onClick={() => setOpen(false)} className={item}>
-                    {m.label}
-                  </Link>
-                ))}
-              </div>
-            )}
-
-            <div className={divider} />
-
-            <nav className="px-2 pb-6">
-              {mainTabs.map((t) => {
-                const active = (activeKey === t.key) || (!activeKey && stripSlash(pathname) === stripSlash(t.href));
-                return (
-                  <Link
-                    key={t.key}
-                    href={t.key === 'my-team' && wallet ? `${base}/team/${wallet}` : t.href}
-                    onClick={() => setOpen(false)}
-                    className={cx(item, active && 'bg-white/8')}
-                  >
-                    {t.label}
-                  </Link>
-                );
-              })}
-            </nav>
-          </aside>
-        </>,
-        document.body
-      )}
-
-      {leagueAddress && (
-        <aside className="hidden lg:flex fixed left-0 top-0 bottom-0 w-56 bg-[#0d1117] text-white border-r border-white/5">
-          <div className="flex flex-col w-full">
-            <Link href="/" className="flex items-center gap-3 px-5 pt-5 pb-4">
-              <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={28} height={28} />
-              <span className="text-2xl font-semibold leading-none">Hashmark</span>
+              {leagueName || leagueShort}
             </Link>
-
-            <div className="px-5"><ConnectControls /></div>
-
-            <div className="px-5 pt-3 pb-4">
-              <Link href={`${base}`} className="text-lg font-extrabold tracking-tight hover:text-white/90">
-                {leagueName || leagueShort}
-              </Link>
-            </div>
-
-            <details className="px-3">
-              <summary className="list-none px-2 py-2 text-xs tracking-widest text-gray-400 flex items-center justify-between cursor-pointer">
-                <span>LEAGUE</span><span>▾</span>
-              </summary>
-              <nav className="space-y-1">
-                {leagueMenu.map((m) => (
-                  <Link key={m.href} href={m.href} className="block rounded-md px-4 py-2 text-[15px] text-gray-200 hover:bg白/5 hover:text-white">
-                    {m.label}
-                  </Link>
-                ))}
-              </nav>
-            </details>
-
-            <div className="my-3 mx-4 border-t border-white/5" />
-
-            <nav className="px-3 space-y-1">
-              {mainTabs.map((t) => {
-                const active = (activeKey === t.key) || (!activeKey && stripSlash(pathname) === stripSlash(t.href));
-                return (
-                  <Link
-                    key={t.key}
-                    href={t.key === 'my-team' && wallet ? `${base}/team/${wallet}` : t.href}
-                    className={cx('block rounded-md px-4 py-2 text-[15px]', active ? 'bg-white/8 text-white' : 'text-gray-200 hover:bg-white/5 hover:text-white')}
-                  >
-                    {t.label}
-                  </Link>
-                );
-              })}
-            </nav>
           </div>
-        </aside>
+
+          {/* League dropdown (closed by default) */}
+          <button
+            className="mb-1 inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-[12px] tracking-wide uppercase text-white/75 hover:text-white hover:bg-white/6"
+            type="button"
+            onClick={() => { const el = document.getElementById('league-subnav'); if (el) el.classList.toggle('hidden'); }}
+          >
+            <span>League</span><ChevronDown className="opacity-80" />
+          </button>
+
+          <nav id="league-subnav" className="space-y-1 hidden mb-2">
+            {leagueMenu.map(m => (
+              <Link key={m.href} href={m.href} className={item}>{m.label}</Link>
+            ))}
+          </nav>
+
+          {/* Main tabs */}
+          <nav className="space-y-1">
+            {[
+              { key:'my-team',   label:'My Team',    href: leagueAddress && wallet ? `${base}/team/${wallet}` : `${base}/my-team` },
+              { key:'matchup',   label:'Matchup',    href: (matchupHref || `${base}/scoreboard`)! },
+              { key:'scoreboard',label:'Scoreboard', href: `${base}/scoreboard` },
+              { key:'standings', label:'Standings',  href: `${base}/standings` },
+              { key:'settings',  label:'Settings',   href: `${base}/settings` },
+              ...(isCommissioner ? [{ key:'lm-tools', label:'LM Tools', href:`${base}/lm-tools` }]:[])
+            ].map(t => {
+              const p = stripSlash(pathname);
+              const active = t.key === 'my-team'
+                ? (p === stripSlash(`${base}/my-team`) || p.startsWith(stripSlash(`${base}/team/`)))
+                : p.startsWith(stripSlash(t.href));
+              return (
+                <Link key={t.key} href={t.href} className={cx(item, active && itemActive)}>
+                  {t.label}
+                </Link>
+              );
+            })}
+          </nav>
+
+          <div className="mt-auto flex justify-end pt-2"><ThemeToggleSmall /></div>
+        </div>
+      </aside>
+
+      {/* Outside chevron — hover turns gray */}
+      <button
+        onClick={() => setCollapsed(true)}
+        aria-label="Collapse sidebar"
+        className="fixed top-4 z-50 inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/15 bg-white/10 text-white hover:text-gray-300 hover:bg-white/10"
+        style={{ left: SIDEBAR_W + OUT_BTN_GAP }}
+      >
+        <ArrowLeft />
+      </button>
+
+      {/* Tap-anywhere overlay on small screens */}
+      {overlayMode && (
+        <div
+          className="fixed top-0 right-0 bottom-0 z-40 bg-black/40 lg:hidden"
+          style={{ left: SIDEBAR_W }}
+          onClick={() => setCollapsed(true)}
+        />
       )}
     </>
   );
