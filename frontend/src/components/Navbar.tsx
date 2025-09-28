@@ -69,17 +69,15 @@ function ThemeToggleSmall({ className }: { className?: string }) {
   );
 }
 
-/* ===== TOP BAR connect: network (white), AVAX balance pill, account ===== */
+/* One shared brand class (exact same string on SSR & CSR) */
+const BRAND_TXT = 'font-semibold leading-none text-2xl sm:text-[26px]';
+
+/* ===== TOP BAR connect: AVAX logo + network, then short addr + AVAX amount ===== */
 function TopConnect() {
   return (
     <ConnectButton.Custom>
       {({ account, chain, mounted, openAccountModal, openChainModal, openConnectModal }) => {
         if (!mounted) return null;
-
-        const netLabel =
-          chain?.id === 43113 ? 'FUJI'
-          : chain?.id === 43114 ? 'Avalanche'
-          : (chain?.name ?? 'Select Network');
 
         if (!account) {
           return (
@@ -94,25 +92,27 @@ function TopConnect() {
 
         return (
           <div className="flex items-center gap-2">
+            {/* AVAX logo + network name */}
             <button
               onClick={openChainModal}
-              className="rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-sm text-white hover:bg-white/15"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/10 px-2.5 py-1 text-base text-white hover:bg-white/15"
+              aria-label="Select network"
             >
-              {netLabel}
+              <Image src="/avalanche-avax-logo.svg" alt="AVAX" width={14} height={14} />
+              <span className="truncate">{chain?.name ?? 'Network'}</span>
             </button>
 
-            {account.displayBalance && (
-              <div className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/10 px-2.5 py-1.5 text-sm text-white">
-                <Image src="/avalanche-avax-logo.svg" alt="AVAX" width={14} height={14} />
-                <span className="tabular-nums">{account.displayBalance}</span>
-              </div>
-            )}
-
+            {/* short address + amount of AVAX */}
             <button
               onClick={openAccountModal}
-              className="rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-sm text-white/90 hover:text-white hover:bg-white/15"
+              className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/10 px-2.5 py-1 text-base text-white/90 hover:text-white hover:bg-white/15"
+              aria-label="Account"
+              title={account?.address}
             >
-              {account.displayName}
+              <span className="truncate">{account.displayName}</span>
+              {account.displayBalance && (
+                <span className="tabular-nums">{account.displayBalance}</span>
+              )}
             </button>
           </div>
         );
@@ -121,17 +121,12 @@ function TopConnect() {
   );
 }
 
-/* ===== SIDE BAR connect: combined 'Network + Address' pill (styled) ===== */
+/* ===== SIDE BAR connect: two stacked, narrow boxes (old method) ===== */
 function ConnectControls() {
   return (
     <ConnectButton.Custom>
       {({ account, chain, mounted, openAccountModal, openChainModal, openConnectModal }) => {
         if (!mounted) return null;
-
-        const netLabel =
-          chain?.id === 43113 ? 'FUJI'
-          : chain?.id === 43114 ? 'Avalanche'
-          : (chain?.name ?? 'Network');
 
         if (!account) {
           return (
@@ -144,28 +139,32 @@ function ConnectControls() {
           );
         }
 
-        // Styled split-control pill: left = Network chip, right = address; subtle divider + focus states
         return (
-          <div
-            className="group w-full rounded-xl border border-white/10 bg-white/5 px-2 py-1.5 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] flex items-center gap-2"
-          >
+          <div className="flex flex-col gap-1.5">
+            {/* Narrow network row: AVAX logo + network name + chevron */}
             <button
               onClick={openChainModal}
+              className="w-full inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[15px] text-white hover:bg-white/10 transition"
               aria-label="Select network"
-              className="shrink-0 inline-flex items-center rounded-md border border-white/10 bg-white/10 px-2 py-0.5 text-[11px] font-medium leading-5 tracking-wide uppercase text-white/90 hover:bg-white/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
             >
-              {netLabel}
+              <Image src="/avalanche-avax-logo.svg" alt="AVAX" width={16} height={16} className="rounded-full" />
+              <span className="truncate">{chain?.name ?? 'Network'}</span>
+              <span className="ml-auto opacity-80"><ChevronDown /></span>
             </button>
 
-            <span aria-hidden className="h-4 w-px bg-white/10" />
-
+            {/* Narrow account row: short address + amount of AVAX */}
             <button
               onClick={openAccountModal}
+              className="w-full inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[15px] text-white hover:bg-white/10 transition"
               aria-label="Account"
               title={account?.address}
-              className="ml-auto truncate text-sm opacity-95 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 rounded"
             >
-              {account.displayName}
+              <span className="truncate leading-5">{account.displayName}</span>
+              {account.displayBalance && (
+                <span className="ml-auto shrink-0 rounded-md bg-white/10 px-2 py-0.5 text-xs text-white tabular-nums">
+                  {account.displayBalance}
+                </span>
+              )}
             </button>
           </div>
         );
@@ -191,7 +190,7 @@ function parseMatchupFromPath(p: string) {
 }
 
 /* Dimensions */
-const SIDEBAR_W = 208;
+const SIDEBAR_W = 208;  // keep in sync with globals.css
 const SKINNY_W  = 48;
 const OUT_BTN_GAP = 8;
 
@@ -227,6 +226,14 @@ export default function Navbar() {
     return () => window.removeEventListener('resize', onResize);
   }, []);
   useEffect(() => { try { localStorage.setItem('hm:navCollapsed', collapsed ? '1' : '0'); } catch {} }, [collapsed]);
+
+  /* Push content right when expanded on desktop (fullscreen mode) */
+  useEffect(() => {
+    const cls = 'has-vertical-sidebar';
+    if (leagueAddress && !collapsed && !overlayMode) document.body.classList.add(cls);
+    else document.body.classList.remove(cls);
+    return () => document.body.classList.remove(cls);
+  }, [leagueAddress, collapsed, overlayMode]);
 
   /* Matchup cache */
   const [matchupHref, setMatchupHref] = useState<string | null>(null);
@@ -293,7 +300,7 @@ export default function Navbar() {
     return undefined;
   }, [pathname, leagueAddress, base]);
 
-  /* Home top bar (Hashmark bigger previously) */
+  /* Home top bar */
   const onHome = !leagueAddress;
   if (onHome) {
     return (
@@ -301,7 +308,7 @@ export default function Navbar() {
         <div className="mx-auto max-w-6xl flex items-center justify-between px-4 sm:px-6 py-3">
           <Link href="/" className="flex items-center gap-2">
             <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={24} height={24} />
-            <span className="text-2xl font-semibold">Hashmark</span>
+            <span className={BRAND_TXT}>Hashmark</span>
           </Link>
           <div className="flex items-center gap-2">
             <ThemeToggleSmall />
@@ -356,10 +363,10 @@ export default function Navbar() {
           {/* Brand (flush with tabs) */}
           <Link href="/" className="flex items-center gap-2 mb-3 pl-3">
             <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={24} height={24} />
-            <span className="text-2xl font-semibold leading-none">Hashmark</span>
+            <span className={BRAND_TXT}>Hashmark</span>
           </Link>
 
-          {/* Combined network + address pill (styled) */}
+          {/* Side-panel: two narrow rows (network, then account) */}
           <div className="mb-2"><ConnectControls /></div>
 
           {/* League title (pill, clickable) */}
@@ -391,7 +398,7 @@ export default function Navbar() {
           <nav className="space-y-1">
             {[
               { key:'my-team',   label:'My Team',    href: leagueAddress && wallet ? `${base}/team/${wallet}` : `${base}/my-team` },
-              { key:'matchup',   label:'Matchup',    href: (matchupHref || `${base}/scoreboard`)! },
+              { key:'matchup',   label:'Matchup',    href: ( (matchupHref || `${base}/scoreboard`) as string) },
               { key:'scoreboard',label:'Scoreboard', href: `${base}/scoreboard` },
               { key:'standings', label:'Standings',  href: `${base}/standings` },
               { key:'settings',  label:'Settings',   href: `${base}/settings` },

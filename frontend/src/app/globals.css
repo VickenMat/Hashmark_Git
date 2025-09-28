@@ -33,9 +33,10 @@
 body {
   background: var(--background);
   color: var(--foreground);
+  transition: margin-left 200ms ease; /* smooth push when sidebar opens */
 }
 
-/* Reserve space for the fixed sidebar on desktop */
+/* Push page right in fullscreen (desktop) when sidebar is open */
 @media (min-width: 1024px) {
-  body.has-vertical-sidebar { padding-left: 14rem; } /* matches w-56 */
+  body.has-vertical-sidebar { margin-left: 208px; } /* match SIDEBAR_W in Navbar.tsx */
 }
