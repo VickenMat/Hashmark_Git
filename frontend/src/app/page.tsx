@@ -729,25 +729,25 @@ function LeagueCard({
           {l.name || 'Unnamed League'}
         </h3>
 
-        {/* Team Name + Wallet */}
-        <div className="mb-3 space-y-2 text-[12px] sm:text-[13px]" style={{ color: EGGSHELL }}>
-          <div className="flex flex-wrap items-center justify-center gap-2 text-center">
-            <span className="font-semibold" style={{ color: ZIMA }}>Team Name</span>
-            <span className="font-mono text-[12px]">{myProfile.name || '—'}</span>
-          </div>
-          <div className="flex flex-wrap items-center justify-center gap-2 text-center">
-            <span className="font-semibold">Wallet Address</span>
-            <code className="break-all font-mono text-[11px]">{(walletAddr ?? '—')}</code>
-            <button
-              onClick={() => walletAddr && copy(walletAddr)}
-              disabled={!walletAddr}
-              className="rounded-md border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] hover:bg-white/15 disabled:opacity-40"
-              style={{ color: EGGSHELL }}
-            >
-              Copy
-            </button>
-          </div>
-        </div>
+{/* Team Name + League Address */}
+<div className="mb-3 space-y-2 text-[12px] sm:text-[13px]" style={{ color: EGGSHELL }}>
+  <div className="flex flex-wrap items-center justify-center gap-2 text-center">
+    <span className="font-semibold" style={{ color: ZIMA }}>Team Name</span>
+    <span className="font-mono text-[12px]">{myProfile.name || '—'}</span>
+  </div>
+  <div className="flex flex-wrap items-center justify-center gap-2 text-center">
+    <span className="font-semibold">League Address</span>
+    <code className="break-all font-mono text-[11px]">{l.addr}</code>
+    <button
+      onClick={() => copy(l.addr)}
+      className="rounded-md border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] hover:bg-white/15"
+      style={{ color: EGGSHELL }}
+    >
+      Copy
+    </button>
+  </div>
+</div>
+
 
         {/* Pills */}
         <div className="mb-2 flex flex-wrap items-center justify-center gap-2 text-xs" style={{ color: EGGSHELL }}>

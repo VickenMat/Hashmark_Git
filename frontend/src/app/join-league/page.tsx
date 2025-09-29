@@ -1,7 +1,7 @@
 // src/app/join-league/page.tsx
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import {
@@ -14,6 +14,10 @@ import {
 import { keccak256, stringToBytes } from 'viem';
 import { toast } from 'react-hot-toast';
 import { LEAGUE_ABI } from '@/lib/LeagueContracts';
+
+/* ------------------- Theme ------------------- */
+const ZIMA = '#37c0f6';
+const EGGSHELL = '#F0EAD6';
 
 function formatAvax(wei?: bigint) {
   if (wei === undefined) return '—';
@@ -48,6 +52,23 @@ function passwordArgFor(methodName: 'joinLeague' | 'createTeam', pw: string) {
   return passwordIsBytes32(methodName)
     ? (keccak256(stringToBytes(pw)) as `0x${string}`)
     : pw;
+}
+
+/* ------------------- Team name generator ------------------- */
+function randomTeamName(seed?: number) {
+  const adj = [
+    'Electric','Savage','Icy','Crimson','Silent','Prime','Solar','Noisy',
+    'Lucky','Golden','Quantum','Turbo','Wired','Swift','Blitz','Stealthy'
+  ];
+  const beasts = [
+    'Dragons','Wolves','Titans','Raptors','Cyclones','Stallions',
+    'Cobras','Falcons','Badgers','Rhinos','Hawks','Sharks','Phoenix'
+  ];
+  const n = (seed ?? Math.floor(Math.random() * 1e9));
+  const a = adj[n % adj.length];
+  const b = beasts[(n >> 4) % beasts.length];
+  const num = (n % 999) + 1;
+  return `${a}${b}${num}`;
 }
 
 export default function JoinLeaguePage() {
@@ -108,11 +129,9 @@ export default function JoinLeaguePage() {
       setLoading(true);
       setReadError(null);
       try {
-        // 0) ensure it’s a contract on this chain
         const code = await publicClient.getBytecode({ address: debouncedAddr as `0x${string}` });
         if (!code) throw new Error('No contract code at this address.');
 
-        // 1) try getSummary()
         try {
           const res = (await publicClient.readContract({
             abi: LEAGUE_ABI,
@@ -121,11 +140,10 @@ export default function JoinLeaguePage() {
           })) as SummaryTuple;
           if (!cancelled) setSummary(res);
         } catch {
-          // 2) on ANY error, fall back to discrete reads (stronger & more accurate)
           const res = await fallbackReads(debouncedAddr as `0x${string}`);
           if (!cancelled) setSummary(res);
         }
-      } catch (e) {
+      } catch {
         if (!cancelled) {
           setSummary(null);
           setReadError("Couldn't read league at this address. Make sure the address is a League contract on the current network.");
@@ -155,10 +173,9 @@ export default function JoinLeaguePage() {
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
   const tx = useWaitForTransactionReceipt({ hash: txHash });
 
-  // Redirect to home after success
   useEffect(() => {
     if (tx.isSuccess) {
-      router.push('/'); // homescreen
+      router.push('/');
     }
   }, [tx.isSuccess, router]);
 
@@ -167,13 +184,10 @@ export default function JoinLeaguePage() {
     (!needsPassword || password.length > 0) &&
     !tx.isLoading;
 
-  // prettier error messages for password-related failures
   function parsePasswordRevert(err: any): string | null {
     const msg = String(err?.shortMessage || err?.message || '').toLowerCase();
     if (msg.includes('bad password')) return 'Wrong password for this league.';
-    // Common revert surfaces (wagon/viem can give generic "execution reverted")
     if (msg.includes('execution reverted') || msg.includes('revert')) {
-      // If league requires a password and we had one, assume it’s wrong
       return needsPassword ? 'Wrong password for this league.' : 'Transaction reverted.';
     }
     return null;
@@ -189,12 +203,9 @@ export default function JoinLeaguePage() {
     value: bigint
   ) {
     const pwArg = passwordArgFor(method, password);
-
-    // Clear previous inline error
     setPasswordError(null);
 
     try {
-      // 🧪 Preflight simulation (no gas, catches wrong password early)
       await publicClient!.simulateContract({
         abi: LEAGUE_ABI,
         address: addr as `0x${string}`,
@@ -202,7 +213,7 @@ export default function JoinLeaguePage() {
         args: [teamName.trim(), pwArg as any],
         value,
         account: wallet,
-        chain: undefined, // use connected chain
+        chain: undefined,
       });
     } catch (err: any) {
       const pretty = parsePasswordRevert(err);
@@ -212,13 +223,11 @@ export default function JoinLeaguePage() {
         shakeNow();
         return;
       }
-      // Unknown simulation failure
       toast.error(err?.shortMessage || err?.message || 'Simulation failed');
       return;
     }
 
     try {
-      // If simulation passed, send the real tx
       const hash = await writeContractAsync({
         abi: LEAGUE_ABI,
         address: addr as `0x${string}`,
@@ -228,7 +237,6 @@ export default function JoinLeaguePage() {
       });
       setTxHash(hash);
     } catch (err: any) {
-      // Fallback: if user changes password between simulate & send, still parse nicely
       const pretty = parsePasswordRevert(err);
       if (pretty) {
         setPasswordError(pretty);
@@ -240,162 +248,233 @@ export default function JoinLeaguePage() {
     }
   }
 
-  async function buyNowOrJoinFree() {
+  const buyNowOrJoinFree = async () => {
     if (!canSubmit || !wallet) return;
     await simulateThenSend('joinLeague', isFree ? 0n : isNative ? buyInAmount : 0n);
-  }
+  };
 
-  async function joinPayLater() {
+  const joinPayLater = async () => {
     if (!canSubmit || !wallet) return;
     await simulateThenSend('createTeam', 0n);
-  }
+  };
 
   const showLeagueInfo = addrOk;
+  const copy = (text: string) => navigator.clipboard.writeText(text);
 
-  return (
-    <div className="mx-auto max-w-3xl px-4 sm:px-6 py-10 text-white">
-      <div className="mb-6">
-        <Link href="/" className="text-blue-400 hover:underline">← Back</Link>
-      </div>
-
-      <h1 className="mb-8 text-center text-4xl font-extrabold tracking-tight">Join League</h1>
-
-      <div className="mx-auto max-w-2xl rounded-2xl border border-white/10 bg-black/40 p-6 shadow-2xl shadow-black/30">
-        <label className="mb-4 block">
-          <span className="text-sm text-gray-400">League Contract Address</span>
-          <input
-            value={contractAddress}
-            onChange={(e) => setContractAddress(e.target.value)}
-            placeholder="0x..."
-            className="mt-1 w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 font-mono outline-none focus:ring-2 focus:ring-fuchsia-400/60"
-          />
-        </label>
-
-        <label className="mb-6 block">
-          <span className="text-sm text-gray-400">Team Name</span>
-          <input
-            value={teamName}
-            onChange={(e) => setTeamName(e.target.value)}
-            placeholder="e.g. vicken_team1"
-            className="mt-1 w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 outline-none focus:ring-2 focus:ring-fuchsia-400/60"
-          />
-        </label>
-
-        {showLeagueInfo && (
-          <div className="mb-6 rounded-xl border border-white/10 bg-white/[0.04] p-4 text-center">
-            {loading && <div className="py-4 text-sm text-gray-300">Fetching league…</div>}
-
-            {!loading && readError && (
-              <div className="rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
-                {readError}
-              </div>
-            )}
-
-            {!loading && !readError && summary && (
-              <>
-                <div className="text-sm uppercase tracking-[0.2em] text-purple-200/80 mb-1">League</div>
-                <div className="text-xl font-bold">{leagueName || '—'}</div>
-                {commissioner && (
-                  <div className="mt-1 text-xs text-gray-400 font-mono">
-                    Commissioner: {commissioner}
-                  </div>
-                )}
-
-                <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3">
-                  <div className="rounded-lg border border-white/10 bg-black/30 p-3">
-                    <div className="text-xs text-gray-400">Buy-In</div>
-                    <div className="mt-1 font-semibold">
-                      {isNative ? formatAvax(buyInAmount) : buyInAmount === 0n ? 'Free' : 'ERC-20'}
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-white/10 bg-black/30 p-3">
-                    <div className="text-xs text-gray-400">Teams</div>
-                    <div className="mt-1 font-semibold">
-                      {typeof teamCap === 'number' && !Number.isNaN(teamCap) ? teamCap : '—'}
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-white/10 bg-black/30 p-3 col-span-2 sm:col-span-1">
-                    <div className="text-xs text-gray-400">Requires Password</div>
-                    <div className="mt-1 font-semibold">{needsPassword ? 'Yes' : 'No'}</div>
-                  </div>
-                </div>
-              </>
-            )}
+  const leagueHeader = useMemo(() => {
+    if (!showLeagueInfo || loading || readError || !summary) return null;
+    return (
+      <div className="mb-6 rounded-xl border border-white/10 bg-white/[0.04] p-4 text-center">
+        {/* Removed the small "LEAGUE" label per request; show name in Zima */}
+        <div className="text-xl font-extrabold" style={{ color: ZIMA }}>
+          {leagueName || '—'}
+        </div>
+        {commissioner && (
+          <div className="mt-1 text-xs font-mono opacity-80" style={{ color: EGGSHELL }}>
+            Commissioner: {commissioner}
           </div>
         )}
 
+        <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3">
+          <div className="rounded-lg border border-white/10 bg-black/30 p-3">
+            <div className="text-xs opacity-80" style={{ color: EGGSHELL }}>Buy-In</div>
+            <div className="mt-1 font-semibold" style={{ color: EGGSHELL }}>
+              {isNative ? formatAvax(buyInAmount) : buyInAmount === 0n ? 'Free' : 'ERC-20'}
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-black/30 p-3">
+            <div className="text-xs opacity-80" style={{ color: EGGSHELL }}>Teams</div>
+            <div className="mt-1 font-semibold" style={{ color: EGGSHELL }}>
+              {typeof teamCap === 'number' && !Number.isNaN(teamCap) ? teamCap : '—'}
+            </div>
+          </div>
+
+          <div className="col-span-2 rounded-lg border border-white/10 bg-black/30 p-3 sm:col-span-1">
+            <div className="text-xs opacity-80" style={{ color: EGGSHELL }}>Requires Password</div>
+            <div className="mt-1 font-semibold" style={{ color: EGGSHELL }}>{summary?.[5] ? 'Yes' : 'No'}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }, [showLeagueInfo, loading, readError, summary, leagueName, commissioner, isNative, buyInAmount, teamCap]);
+
+  return (
+    <div
+      className="relative mx-auto max-w-3xl px-4 sm:px-6 py-10"
+      style={{ color: EGGSHELL }}
+    >
+      {/* Back button pinned top-left of the page */}
+      <Link
+        href="/"
+        className="absolute left-4 top-4 text-sm hover:underline"
+        style={{ color: EGGSHELL }}
+      >
+        ← Back
+      </Link>
+
+      {/* Page title (no subtitle) */}
+      <h1 className="mb-6 text-center text-4xl font-extrabold tracking-tight" style={{ color: ZIMA }}>
+        Join League
+      </h1>
+
+      {/* How to join (kept) */}
+      <div className="mx-auto mb-6 max-w-2xl rounded-2xl border border-white/10 bg-white/[0.04] p-4 text-sm">
+        <div className="text-center">
+          <div className="mb-1 text-[11px] uppercase tracking-[0.2em]" style={{ color: ZIMA }}>How to join</div>
+          <ol className="mx-auto list-decimal pl-5 text-left sm:inline-block sm:text-left">
+            <li>Paste the League address provided by your commissioner.</li>
+            <li>Pick a team name (unique within the league) or roll the dice.</li>
+            <li>If the league is password-protected, enter the password.</li>
+            <li>Click <span className="font-semibold">Join League</span>. If there’s a native buy-in, it’s sent with the transaction.</li>
+          </ol>
+        </div>
+      </div>
+
+      <div className="mx-auto max-w-2xl rounded-2xl border border-white/10 bg-black/30 p-6 shadow-2xl shadow-black/30">
+        {/* League Address */}
+        <label className="mb-4 block">
+          <span className="block text-center text-sm opacity-80">League Contract Address</span>
+          <div className="mt-1 flex items-center gap-2">
+            <input
+              value={contractAddress}
+              onChange={(e) => setContractAddress(e.target.value)}
+              placeholder="0x..."
+              className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 font-mono outline-none focus:ring-2"
+              style={{ color: EGGSHELL }}
+            />
+            {addrOk && (
+              <button
+                type="button"
+                onClick={() => copy(addr)}
+                className="shrink-0 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                style={{ color: EGGSHELL }}
+                title="Copy address"
+              >
+                Copy
+              </button>
+            )}
+          </div>
+        </label>
+
+        {/* Team Name + Dice */}
+        <label className="mb-6 block">
+          <span className="block text-center text-sm opacity-80">Team Name</span>
+          <div className="mt-1 flex items-center gap-2">
+            <input
+              value={teamName}
+              onChange={(e) => setTeamName(e.target.value)}
+              placeholder="e.g. team_name_123"
+              className="w-full rounded-lg border border-white/15 bg-white/5 px-3 py-2 outline-none focus:ring-2"
+              style={{ color: EGGSHELL }}
+            />
+            <button
+              type="button"
+              onClick={() => setTeamName(randomTeamName())}
+              className="shrink-0 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+              style={{ color: EGGSHELL }}
+              title="Roll a random team name"
+            >
+              🎲
+            </button>
+          </div>
+        </label>
+
+        {/* League summary card */}
         {showLeagueInfo && (
+          <>
+            {loading && (
+              <div className="mb-6 rounded-xl border border-white/10 bg-white/[0.04] p-4 text-center text-sm opacity-80">
+                Fetching league…
+              </div>
+            )}
+            {!loading && readError && (
+              <div className="mb-6 rounded-md border border-red-500/30 bg-red-500/10 p-3 text-sm" style={{ color: EGGSHELL }}>
+                {readError}
+              </div>
+            )}
+            {!loading && !readError && leagueHeader}
+          </>
+        )}
+
+        {/* Password ONLY if required; centered label; no "(required)" */}
+        {showLeagueInfo && summary?.[5] && (
           <div className="mb-6">
             <label className="block">
-              <span className="text-sm text-gray-400">
-                {needsPassword ? 'Password (required)' : 'Password'}
-              </span>
+              <span className="block text-center text-sm opacity-80">Password</span>
               <div className={`mt-1 flex items-center gap-2 ${shake ? 'animate-[shake_0.45s_ease-in-out_1]' : ''}`}>
                 <input
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => { setPassword(e.target.value); setPasswordError(null); }}
-                  placeholder={needsPassword ? 'Enter league password' : 'Enter password (if needed)'}
-                  className={`w-full rounded-lg border px-3 py-2 outline-none focus:ring-2 focus:ring-fuchsia-400/60
+                  placeholder="Enter league password"
+                  className={`w-full rounded-lg border px-3 py-2 outline-none focus:ring-2
                     ${passwordError ? 'border-red-500/60 bg-red-500/5' : 'border-white/15 bg-white/5'}
                   `}
+                  style={{ color: EGGSHELL }}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(s => !s)}
-                  className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:border-fuchsia-400/60"
+                  className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:bg-white/10"
+                  style={{ color: EGGSHELL }}
                 >
                   {showPassword ? 'Hide' : 'Show'}
                 </button>
               </div>
               {passwordError && (
-                <div className="mt-1 text-xs text-red-300">{passwordError}</div>
+                <div className="mt-1 text-center text-xs" style={{ color: '#ffb4b4' }}>{passwordError}</div>
               )}
             </label>
           </div>
         )}
 
+        {/* Actions */}
         <div className="text-center">
           {isFree || !showLeagueInfo ? (
             <button
               disabled={!showLeagueInfo || !canSubmit}
               onClick={buyNowOrJoinFree}
-              className="w-full rounded-xl bg-gradient-to-r from-fuchsia-600 to-purple-600 px-5 py-3 font-semibold shadow-lg shadow-fuchsia-500/25 disabled:opacity-40"
+              className="w-full rounded-xl px-5 py-3 font-semibold shadow disabled:opacity-40"
+              style={{ backgroundColor: ZIMA, color: '#0b0b14' }}
             >
-              Join
+              Join League
             </button>
           ) : (
             <div className="grid gap-3 sm:grid-cols-2">
               <button
                 disabled={!canSubmit || !isNative}
                 onClick={buyNowOrJoinFree}
-                className="rounded-xl bg-gradient-to-r from-fuchsia-600 to-purple-600 px-5 py-3 font-semibold shadow-lg shadow-fuchsia-500/25 disabled:opacity-40"
+                className="rounded-xl px-5 py-3 font-semibold shadow disabled:opacity-40"
+                style={{ backgroundColor: ZIMA, color: '#0b0b14' }}
+                title={isNative ? undefined : 'Use the ERC-20 flow in the League page'}
               >
-                Buy in now ({isNative ? formatAvax(buyInAmount) : 'ERC-20'})
+                Join League ({isNative ? formatAvax(buyInAmount) : 'ERC-20'})
               </button>
               <button
                 disabled={!canSubmit}
                 onClick={joinPayLater}
-                className="rounded-xl border border-white/15 bg-white/5 px-5 py-3 font-semibold hover:border-fuchsia-400/60 disabled:opacity-40"
+                className="rounded-xl px-5 py-3 font-semibold"
+                style={{ border: `1px solid ${ZIMA}`, color: EGGSHELL, background: 'transparent' }}
               >
-                Join &amp; pay later
+                Join &amp; Pay Later
               </button>
             </div>
           )}
 
+          {/* Tx status */}
           {txHash && (
-            <div className="mt-3 text-sm text-gray-300">
+            <div className="mt-3 text-sm">
               {tx.isLoading ? 'Confirming transaction…'
                 : tx.isSuccess ? 'Joined!'
                 : tx.isError ? 'Transaction failed'
                 : 'Sent…'}{' '}
               <a
-                className="text-blue-400 hover:underline"
+                className="hover:underline"
                 href={`https://testnet.snowtrace.io/tx/${txHash}`}
                 target="_blank"
                 rel="noreferrer"
+                style={{ color: EGGSHELL }}
               >
                 View on Snowtrace →
               </a>
@@ -403,7 +482,7 @@ export default function JoinLeaguePage() {
           )}
         </div>
 
-        <p className="mt-6 text-center text-xs text-gray-400">
+        <p className="mt-6 text-center text-xs opacity-80">
           Tip: Native AVAX buy-ins send AVAX with the join transaction. ERC-20 buy-ins require token approval first.
         </p>
       </div>
