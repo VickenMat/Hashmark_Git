@@ -3,8 +3,17 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useAccount, useChainId, usePublicClient, useReadContract, useReadContracts } from 'wagmi';
-import { LEAGUE_FACTORY_ABI, factoryAddressForChain } from '@/lib/LeagueContracts';
+import {
+  useAccount,
+  useChainId,
+  usePublicClient,
+  useReadContract,
+  useReadContracts,
+} from 'wagmi';
+import {
+  LEAGUE_FACTORY_ABI,
+  factoryAddressForChain,
+} from '@/lib/LeagueContracts';
 import { useTeamProfile } from '@/lib/teamProfile';
 import CurrentMatchupCard from '@/components/CurrentMatchupCard';
 import { activeWeekKey } from '@/lib/matchups';
@@ -13,8 +22,8 @@ type Address = `0x${string}`;
 const ZERO: Address = '0x0000000000000000000000000000000000000000';
 
 /* ------------------- Theme constants ------------------- */
-const ZIMA = '#37c0f6';        // "zima blue"
-const EGGSHELL = '#F0EAD6';    // "eggshell"
+const ZIMA = '#37c0f6';
+const EGGSHELL = '#F0EAD6';
 const ORANGE = '#FFA500';
 
 /* ------------------- ABIs ------------------- */
@@ -78,7 +87,6 @@ function ReorderModal({
   setOrder: (next: string[]) => void; walletKey: string; onSaved: () => void;
 }) {
   const [list, setList] = useState<string[]>([]);
-
   useEffect(() => {
     if (!open) return;
     const visible = leagues.map((l) => l.addr);
@@ -106,7 +114,6 @@ function ReorderModal({
         <div className="mb-4 text-center">
           <h3 className="text-lg font-semibold" style={{ color: ZIMA }}>Reorder Leagues</h3>
         </div>
-
         <div className="max-h-[50vh] overflow-y-auto">
           {list.length === 0 ? (
             <div className="rounded-full border border-white/10 bg-white/5 px-4 py-3 text-center text-sm" style={{ color: EGGSHELL }}>
@@ -130,7 +137,6 @@ function ReorderModal({
             ))
           )}
         </div>
-
         <div className="mt-5 flex items-center justify-center gap-3">
           <button onClick={onClose} className="rounded-full border border-white/15 px-5 py-2 hover:bg-white/10" style={{ color: EGGSHELL }}>Cancel</button>
           <button onClick={save} className="rounded-full px-6 py-2 font-semibold text-white hover:opacity-90" style={{ backgroundColor: ZIMA }}>
@@ -166,6 +172,7 @@ export default function Home() {
   const [hadEver, setHadEver] = useState<boolean>(() => readLS<boolean>(HAD_EVER_KEY, false));
   const [order, setOrder] = useState<string[]>(() => readLS<string[]>(ORDER_KEY, []));
 
+  // Refresh LS-based toggles when wallet changes
   useEffect(() => {
     setArchived(readLS<string[]>(ARCHIVE_KEY, []));
     setArchivedOnly(readLS<boolean>(ARCHIVE_ONLY_KEY, false));
@@ -203,6 +210,7 @@ export default function Home() {
     return () => window.removeEventListener('storage', on);
   }, []);
 
+  // sanity: factory code present
   useEffect(() => {
     (async () => {
       if (!publicClient || !factory) return;
@@ -213,58 +221,74 @@ export default function Home() {
         console.debug('[Factory bytecode check failed]', e);
       }
     })();
-  }, [publicClient, factory]);
+  }, [publicClient, factory, chainId]);
 
-  /* ------------------- Factory reads ------------------- */
+  /* ------------------- Factory reads (hardened) ------------------- */
   const leaguesRes = useReadContract({
     abi: LEAGUE_FACTORY_ABI,
-    address: factoryAddressForChain(chainId) as Address | undefined,
+    address: factory,
     functionName: 'getLeagues',
     chainId,
-    query: { enabled: Boolean(factory), refetchInterval: 10_000 },
-  });
-  const leaguesByCreatorRes = useReadContract({
-    abi: LEAGUE_FACTORY_ABI,
-    address: factory,
-    functionName: 'getLeaguesByCreator',
-    args: wallet ? [wallet as Address] : undefined,
-    chainId,
-    query: { enabled: Boolean(wallet && factory), refetchInterval: 10_000 },
+    query: {
+      enabled: Boolean(factory),
+      refetchInterval: 10_000,
+      staleTime: 0,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+    },
   });
 
+  // Source of truth: the factory list
   const leagueAddrs = useMemo<Address[]>(() => {
     const a = leaguesRes.data as unknown;
-    const b = leaguesByCreatorRes.data as unknown;
-    const arrA = Array.isArray(a) && a.every((x) => typeof x === 'string' && x.startsWith('0x')) ? (a as Address[]) : [];
-    const arrB = Array.isArray(b) && b.every((x) => typeof x === 'string' && x.startsWith('0x')) ? (b as Address[]) : [];
-    return Array.from(new Set([...arrA, ...arrB]));
-  }, [leaguesRes.data, leaguesByCreatorRes.data]);
+    const arr = Array.isArray(a) && a.every((x) => typeof x === 'string' && x.startsWith('0x'))
+      ? (a as Address[])
+      : [];
+    return Array.from(new Set(arr));
+  }, [leaguesRes.data]);
 
   /* ------------------- Per-league reads ------------------- */
   const PER_LEAGUE_STATIC = 10 as const;
   const reads = useMemo(
     () =>
       leagueAddrs.flatMap((a) => [
-        { abi: LEAGUE_ABI, address: a, functionName: 'name' as const },
-        { abi: LEAGUE_ABI, address: a, functionName: 'buyInAmount' as const },
-        { abi: LEAGUE_ABI, address: a, functionName: 'buyInToken' as const },
-        { abi: LEAGUE_ABI, address: a, functionName: 'createdAt' as const },
-        { abi: LEAGUE_ABI, address: a, functionName: 'getTeams' as const },
-        { abi: LEAGUE_ABI, address: a, functionName: 'getDraftSettings' as const },
-        { abi: LEAGUE_ABI, address: a, functionName: 'teamCap' as const },
-        { abi: LEAGUE_ABI, address: a, functionName: 'commissioner' as const },
-        { abi: LEAGUE_ABI, address: a, functionName: 'requiresPassword' as const },
-        { abi: LEAGUE_ABI, address: a, functionName: 'escrowBalances' as const },
-        ...(wallet ? [{ abi: LEAGUE_ABI, address: a, functionName: 'outstandingOf' as const, args: [wallet as Address] }] : []),
-        ...(wallet ? [{ abi: LEAGUE_ABI, address: a, functionName: 'hasPaid' as const, args: [wallet as Address] }] : []),
+        { abi: LEAGUE_ABI, address: a, functionName: 'name' as const, chainId },
+        { abi: LEAGUE_ABI, address: a, functionName: 'buyInAmount' as const, chainId },
+        { abi: LEAGUE_ABI, address: a, functionName: 'buyInToken' as const, chainId },
+        { abi: LEAGUE_ABI, address: a, functionName: 'createdAt' as const, chainId },
+        { abi: LEAGUE_ABI, address: a, functionName: 'getTeams' as const, chainId },
+        { abi: LEAGUE_ABI, address: a, functionName: 'getDraftSettings' as const, chainId },
+        { abi: LEAGUE_ABI, address: a, functionName: 'teamCap' as const, chainId },
+        { abi: LEAGUE_ABI, address: a, functionName: 'commissioner' as const, chainId },
+        { abi: LEAGUE_ABI, address: a, functionName: 'requiresPassword' as const, chainId },
+        { abi: LEAGUE_ABI, address: a, functionName: 'escrowBalances' as const, chainId },
+        ...(wallet ? [{ abi: LEAGUE_ABI, address: a, functionName: 'outstandingOf' as const, args: [wallet as Address], chainId }] : []),
+        ...(wallet ? [{ abi: LEAGUE_ABI, address: a, functionName: 'hasPaid' as const, args: [wallet as Address], chainId }] : []),
       ]),
-    [leagueAddrs, wallet],
+    [leagueAddrs, wallet, chainId],
   );
 
   const metaRes = useReadContracts({
     contracts: reads,
-    query: { enabled: leagueAddrs.length > 0, refetchInterval: 10_000 },
+    query: {
+      enabled: leagueAddrs.length > 0,
+      refetchInterval: 10_000,
+      staleTime: 0,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+    },
   });
+
+  // also refetch on visibility changes (helpful after RPC change)
+  useEffect(() => {
+    const onVis = () => {
+      leaguesRes.refetch?.();
+      metaRes.refetch?.();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chainId]);
 
   const teamsByLeague = useMemo(() => {
     const out: { addr: Address; teams: TeamTuple[] }[] = [];
@@ -284,14 +308,21 @@ export default function Home() {
           address: addr,
           functionName: 'hasPaid' as const,
           args: [t.owner] as [Address],
+          chainId,
         })),
       ),
-    [teamsByLeague],
+    [teamsByLeague, chainId],
   );
 
   const teamPaidRes = useReadContracts({
     contracts: teamHasPaidReads,
-    query: { enabled: teamHasPaidReads.length > 0, refetchInterval: 10_000 },
+    query: {
+      enabled: teamHasPaidReads.length > 0,
+      refetchInterval: 10_000,
+      staleTime: 0,
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
+    },
   });
 
   const teamPaidCounts = useMemo<Record<string, number>>(() => {
@@ -400,13 +431,12 @@ export default function Home() {
 
   const scrollToPage = (p: number) => {
     const el = railRef.current; if (!el) return;
-    const clamped = ((p % totalPages) + totalPages) % totalPages; // wrap both directions
+    const clamped = ((p % totalPages) + totalPages) % totalPages;
     el.scrollTo({ left: clamped * el.clientWidth, behavior: 'smooth' });
     setTimeout(recomputeActive, 250);
   };
   useEffect(() => { recomputeActive(); }, [isLg, filtered.length]);
 
-  // ensure arrows keep working after reorder or toggles
   useEffect(() => {
     const el = railRef.current;
     if (el) el.scrollTo({ left: 0 });
@@ -457,7 +487,6 @@ export default function Home() {
 
         {/* ===== Controls row ===== */}
         <div className="mb-4 flex flex-wrap items-center justify-center gap-3" style={{ color: EGGSHELL }}>
-          {/* Switcher bar */}
           {filtered.length > 0 && (
             <div className="inline-flex max-w-full overflow-x-auto rounded-2xl border border-white/15 bg-white/5 p-1 shadow-sm">
               <div className="flex">
@@ -468,9 +497,7 @@ export default function Home() {
                       <button
                         onClick={() => jumpToIndex(i)}
                         className={`relative z-10 max-w-[160px] truncate px-2 py-0.5 text-[12px] font-medium transition-all duration-300 ${
-                          active
-                            ? 'rounded-xl bg-white/10 shadow-sm'
-                            : 'hover:bg-white/5'
+                          active ? 'rounded-xl bg-white/10 shadow-sm' : 'hover:bg-white/5'
                         }`}
                         title={l.name || l.addr}
                         style={{ color: EGGSHELL }}
@@ -484,8 +511,6 @@ export default function Home() {
                   );
                 })}
               </div>
-
-              {/* Reorder trigger */}
               <button
                 onClick={() => setModalOpen(true)}
                 className="ml-2 inline-flex h-9 w-9 items-center justify-center rounded-xl border border-white/15 bg-white/10 hover:bg-white/15"
@@ -498,18 +523,17 @@ export default function Home() {
             </div>
           )}
 
-          {/* Active/Archived pills */}
           {showPills && (
             <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-1 shadow-sm">
               <button
-                onClick={() => { setArchivedOnly(false); setTimeout(recomputeActive, 0); }}
+                onClick={() => { setArchivedOnly(false); setTimeout(() => {}, 0); }}
                 className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${!archivedOnly ? 'bg-white/10' : ''}`}
                 style={{ color: EGGSHELL }}
               >
                 Active
               </button>
               <button
-                onClick={() => { setArchivedOnly(true); setTimeout(recomputeActive, 0); }}
+                onClick={() => { setArchivedOnly(true); setTimeout(() => {}, 0); }}
                 className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${archivedOnly ? 'bg-white/10' : ''}`}
                 style={{ color: EGGSHELL }}
               >
@@ -533,6 +557,7 @@ export default function Home() {
                     archivedView={archivedOnly}
                     walletAddr={wallet as Address | undefined}
                     week={week}
+                    chainId={chainId}
                   />
                 </div>
               </section>
@@ -550,18 +575,19 @@ export default function Home() {
                           archivedView={archivedOnly}
                           walletAddr={wallet as Address | undefined}
                           week={week}
+                          chainId={chainId}
                         />
                       </div>
                     ))}
                   </div>
                 </div>
-
                 {filtered.length > (isLg ? 2 : 1) && (
                   <>
                     <button
                       onClick={() => {
-                        const cur = Math.floor(activeRange[0] / perPage);
-                        const prev = (cur - 1 + totalPages) % totalPages; // wraps
+                        const cur = Math.floor(activeRange[0] / (isLg ? 2 : 1));
+                        const total = Math.max(1, Math.ceil(filtered.length / (isLg ? 2 : 1)));
+                        const prev = (cur - 1 + total) % total;
                         scrollToPage(prev);
                       }}
                       className="absolute -left-5 top-1/2 -translate-y-1/2 grid h-9 w-9 place-items-center rounded-full border border-white/15 bg-white/10 text-base shadow-sm transition hover:bg-white/15"
@@ -572,8 +598,9 @@ export default function Home() {
                     </button>
                     <button
                       onClick={() => {
-                        const cur = Math.floor(activeRange[0] / perPage);
-                        const next = (cur + 1) % totalPages; // wraps
+                        const cur = Math.floor(activeRange[0] / (isLg ? 2 : 1));
+                        const total = Math.max(1, Math.ceil(filtered.length / (isLg ? 2 : 1)));
+                        const next = (cur + 1) % total;
                         scrollToPage(next);
                       }}
                       className="absolute -right-5 top-1/2 -translate-y-1/2 grid h-9 w-9 place-items-center rounded-full border border-white/15 bg-white/10 text-base shadow-sm transition hover:bg-white/15"
@@ -619,7 +646,9 @@ export default function Home() {
               <p style={{ color: EGGSHELL }}>Fast finality and low fees make Avalanche ideal for interactive apps. Test first on <b>Fuji</b>.</p>
               <div className="mt-3 flex flex-wrap gap-2 text-sm">
                 <a href="https://faucet.avax.network/" target="_blank" rel="noopener noreferrer" className="rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 hover:bg-white/15" style={{ color: EGGSHELL }}>Get Test AVAX</a>
-                <a href="https://testnet.snowtrace.io/" target="_blank" rel="noopener noreferrer" className="rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 hover:bg-white/15" style={{ color: EGGSHELL }}>Snowtrace (Testnet)</a>
+                <a href={isFuji ? 'https://testnet.snowtrace.io/' : 'https://snowtrace.io/'} target="_blank" rel="noopener noreferrer" className="rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 hover:bg-white/15" style={{ color: EGGSHELL }}>
+                  Snowtrace ({isFuji ? 'Testnet' : 'Mainnet'})
+                </a>
               </div>
             </div>
             <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-5">
@@ -648,7 +677,7 @@ export default function Home() {
           const el = railRef.current;
           if (el) el.scrollTo({ left: 0 });
           setTimeout(() => {
-            if (el) setActiveRange([0, (perPage - 1)]);
+            if (el) setActiveRange([0, (isLg ? 2 : 1) - 1]);
           }, 0);
         }}
       />
@@ -682,18 +711,17 @@ function CTA({ href, intent, children }: { href: string; intent: 'create' | 'joi
 
 /* ------------------- LeagueCard ------------------- */
 function LeagueCard({
-  l, now, archive, restore, archivedView, walletAddr, week,
+  l, now, archive, restore, archivedView, walletAddr, week, chainId,
 }: {
   l: LeagueCardData; now: number;
   archive: (addr: string) => void; restore: (addr: string) => void;
-  archivedView: boolean; walletAddr?: Address | undefined; week: number;
+  archivedView: boolean; walletAddr?: Address | undefined; week: number; chainId: number;
 }) {
   const draftDate = l.draftTs > 0 ? new Date(l.draftTs * 1000) : null;
   const left = Math.max(0, l.draftTs - now);
   const t = secsTo(left);
 
-  const myProfile  = useTeamProfile(l.addr, walletAddr, { name: '—' });
-
+  const myProfile = useTeamProfile(l.addr, walletAddr, { name: '—' });
   const copy = (text: string) => navigator.clipboard.writeText(text);
 
   const isFreeLeague = (l.buyIn ?? 0n) === 0n;
@@ -712,42 +740,37 @@ function LeagueCard({
     : fullnessPct <= 66 ? 'from-orange-400 to-orange-500'
     : 'from-yellow-400 to-yellow-500');
 
-  // Compute my pick from draft order
   const myPick = walletAddr && l.draftOrder.length > 0
     ? (l.draftOrder.findIndex(a => a?.toLowerCase() === walletAddr.toLowerCase()) + 1 || undefined)
     : undefined;
 
-  // Uniform content box height
   const boxClass = 'rounded-2xl border border-white/10 bg-white/[0.03] p-4 min-h-[185px]';
 
   return (
-    // Single card with eggshell border
     <div className="h-[490px] rounded-2xl border p-4" style={{ borderColor: EGGSHELL }}>
       <div className="group flex h-full flex-col rounded-2xl">
-        {/* Name */}
         <h3 className="mb-2 text-center text-2xl font-extrabold tracking-tight" style={{ color: ZIMA }}>
           {l.name || 'Unnamed League'}
         </h3>
 
-{/* Team Name + League Address */}
-<div className="mb-3 space-y-2 text-[12px] sm:text-[13px]" style={{ color: EGGSHELL }}>
-  <div className="flex flex-wrap items-center justify-center gap-2 text-center">
-    <span className="font-semibold" style={{ color: ZIMA }}>Team Name</span>
-    <span className="font-mono text-[12px]">{myProfile.name || '—'}</span>
-  </div>
-  <div className="flex flex-wrap items-center justify-center gap-2 text-center">
-    <span className="font-semibold">League Address</span>
-    <code className="break-all font-mono text-[11px]">{l.addr}</code>
-    <button
-      onClick={() => copy(l.addr)}
-      className="rounded-md border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] hover:bg-white/15"
-      style={{ color: EGGSHELL }}
-    >
-      Copy
-    </button>
-  </div>
-</div>
-
+        {/* Team Name + League Address */}
+        <div className="mb-3 space-y-2 text-[12px] sm:text-[13px]" style={{ color: EGGSHELL }}>
+          <div className="flex flex-wrap items-center justify-center gap-2 text-center">
+            <span className="font-semibold" style={{ color: ZIMA }}>Team Name</span>
+            <span className="font-mono text-[12px]">{myProfile.name || '—'}</span>
+          </div>
+          <div className="flex flex-wrap items-center justify-center gap-2 text-center">
+            <span className="font-semibold">League Address</span>
+            <code className="break-all font-mono text-[11px]">{l.addr}</code>
+            <button
+              onClick={() => copy(l.addr)}
+              className="rounded-md border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] hover:bg-white/15"
+              style={{ color: EGGSHELL }}
+            >
+              Copy
+            </button>
+          </div>
+        </div>
 
         {/* Pills */}
         <div className="mb-2 flex flex-wrap items-center justify-center gap-2 text-xs" style={{ color: EGGSHELL }}>
@@ -757,10 +780,7 @@ function LeagueCard({
               : <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-100/10 px-2.5 py-1 text-xs ring-1 ring-emerald-300/30" style={{ color: EGGSHELL }}>Paid</span>
           )}
           {l.isCommissioner && (
-            <span
-              className="rounded-full border px-2 py-1"
-              style={{ color: EGGSHELL, borderColor: '#FFD700', background: 'rgba(255,215,0,0.08)' }}
-            >
+            <span className="rounded-full border px-2 py-1" style={{ color: EGGSHELL, borderColor: '#FFD700', background: 'rgba(255,215,0,0.08)' }}>
               Commissioner
             </span>
           )}
@@ -770,89 +790,98 @@ function LeagueCard({
           {l.escrowNative !== undefined && <span className="rounded-full border border-white/15 bg-white/5 px-2 py-1" style={{ color: EGGSHELL }}>Escrow: {formatAvax(l.escrowNative)}</span>}
         </div>
 
-        {/* Progress */}
-<div className="mx-auto mb-5 flex w-full max-w-md gap-4">
-  {/* Payments */}
-  <div className="flex-1">
-    <div className="mb-1 flex items-center justify-between text-[12px] font-semibold" style={{ color: EGGSHELL }}>
-      <span>Payments</span>
-      <span className="font-bold">
-        {isFreeLeague ? 'Free' : `${paidProgress}/${l.filled} (${progressPct}%)`}
-      </span>
-    </div>
-    <div className="h-2 w-full rounded-full bg-white/10">
-      <div
-        className={`h-2 rounded-full bg-gradient-to-r ${paymentBarClass}`}
-        style={{ width: `${isFreeLeague ? 100 : progressPct}%` }}
-      />
-    </div>
-  </div>
+        {/* Progress bars */}
+        <div className="mx-auto mb-5 flex w-full max-w-md gap-4">
+          <div className="flex-1">
+            <div className="mb-1 flex items-center justify-between text-[12px] font-semibold" style={{ color: EGGSHELL }}>
+              <span>Payments</span>
+              <span className="font-bold">
+                {isFreeLeague ? 'Free' : `${paidProgress}/${l.filled} (${progressPct}%)`}
+              </span>
+            </div>
+            <div className="h-2 w-full rounded-full bg-white/10">
+              <div className={`h-2 rounded-full bg-gradient-to-r ${paymentBarClass}`} style={{ width: `${isFreeLeague ? 100 : progressPct}%` }} />
+            </div>
+          </div>
+          <div className="flex-1">
+            <div className="mb-1 flex items-center justify-between text-[12px] font-semibold" style={{ color: EGGSHELL }}>
+              <span>Teams</span>
+              <span className="font-bold">{l.filled}/{l.cap} ({fullnessPct}%)</span>
+            </div>
+            <div className="h-2 w-full rounded-full bg-white/10">
+              <div className={`h-2 rounded-full bg-gradient-to-r ${teamsBarClass}`} style={{ width: `${fullnessPct}%` }} />
+            </div>
+          </div>
+        </div>
 
-  {/* Teams */}
-  <div className="flex-1">
-    <div className="mb-1 flex items-center justify-between text-[12px] font-semibold" style={{ color: EGGSHELL }}>
-      <span>Teams</span>
-      <span className="font-bold">{l.filled}/{l.cap} ({fullnessPct}%)</span>
-    </div>
-    <div className="h-2 w-full rounded-full bg-white/10">
-      <div
-        className={`h-2 rounded-full bg-gradient-to-r ${teamsBarClass}`}
-        style={{ width: `${fullnessPct}%` }}
-      />
-    </div>
-  </div>
-</div>
+{/* Draft / Matchup */}
+<div className="mt-1">
+  {!l.draftCompleted ? (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 min-h-[185px]">
+      <div className="mb-0 text-center text-[11px] uppercase tracking-[0.2em]" style={{ color: ZIMA }}>
+        Draft
+      </div>
 
+      {l.draftTs > 0 ? (
+        <>
+          {/* Date & time */}
+          <div className="mt-0 text-center text-lg font-extrabold" style={{ color: EGGSHELL }}>
+            {new Date(l.draftTs * 1000).toLocaleDateString()} •{' '}
+            {new Date(l.draftTs * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </div>
 
-        {/* Draft / Matchup */}
-        <div className="mt-1">
-          {!l.draftCompleted ? (
-            <div className={boxClass}>
-              <div className="mb-0 text-center text-[11px] uppercase tracking-[0.2em]" style={{ color: ZIMA }}>Draft</div>
-              {draftDate ? (
-                <>
-                  <div className="mt-0 text-center text-lg font-extrabold" style={{ color: EGGSHELL }}>
-                    {draftDate.toLocaleDateString()} • {draftDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </div>
-                  <div className="mt-0 text-center text-sm" style={{ color: EGGSHELL }}>
-                    {myPick ? `Pick ${myPick}` : 'Pick not set'}
-                  </div>
-                  {l.draftTs > now ? (
-                    <div className="mt-2 grid grid-cols-4 gap-2">
-                      {([['Days', t.d], ['Hrs', t.h], ['Min', t.m], ['Sec', t.sec]] as const).map(([label, val]) => (
-                        <div key={label} className="rounded-xl bg-white/10 px-3 py-1.75 text-center ring-1 ring-white/15">
-                          <div className="text-xl font-black tabular-nums" style={{ color: EGGSHELL }}>{val}</div>
-                          <div className="text-[10px]" style={{ color: EGGSHELL }}>{label}</div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="mt-2 text-center font-semibold" style={{ color: EGGSHELL }}>Draft window open</div>
-                  )}
-                </>
-              ) : (
-                <div className="text-center space-y-2" style={{ color: EGGSHELL }}>
-                  <div className="text-xl font-bold">Draft not scheduled</div>
-                  <div className="text-sm leading-relaxed">
-                    <p>
-                      Invite friends by sharing the <span className="font-semibold">League Address</span> and <span className="font-semibold">password</span> (if required).
-                    </p>
-                    <p>The <span className="font-semibold">Commissioner</span> can set the draft order anytime from Draft Settings.</p>
-                  </div>
+          {/* My pick */}
+          <div className="mt-0 text-center text-sm" style={{ color: EGGSHELL }}>
+            {myPick ? `Pick ${myPick}` : 'Pick not set'}
+          </div>
+
+          {/* Countdown (restored) */}
+          {l.draftTs > now ? (
+            <div className="mt-2 grid grid-cols-4 gap-2">
+              {([
+                ['Days', t.d],
+                ['Hrs',  t.h],
+                ['Min',  t.m],
+                ['Sec',  t.sec],
+              ] as const).map(([label, val]) => (
+                <div key={label} className="rounded-xl bg-white/10 px-3 py-1.75 text-center ring-1 ring-white/15">
+                  <div className="text-xl font-black tabular-nums" style={{ color: EGGSHELL }}>{val}</div>
+                  <div className="text-[10px]" style={{ color: EGGSHELL }}>{label}</div>
                 </div>
-              )}
+              ))}
             </div>
           ) : (
-            <div className={boxClass}>
-              <CurrentMatchupCard
-                league={l.addr}
-                owner={(walletAddr as Address) || ZERO}
-                week={week}
-                variant="team"
-              />
+            <div className="mt-2 text-center font-semibold" style={{ color: EGGSHELL }}>
+              Draft window open
             </div>
           )}
+        </>
+      ) : (
+        <div className="text-center space-y-2" style={{ color: EGGSHELL }}>
+          <div className="text-xl font-bold">Draft not scheduled</div>
+          <div className="text-sm leading-relaxed">
+            <p>
+              Invite friends by sharing the <span className="font-semibold">League Address</span> and{' '}
+              <span className="font-semibold">password</span> (if required).
+            </p>
+            <p>The <span className="font-semibold">Commissioner</span> can set the draft order anytime from Draft Settings.</p>
+          </div>
         </div>
+      )}
+    </div>
+  ) : (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 min-h-[185px]">
+      <CurrentMatchupCard
+        key={`${l.addr}:${chainId}:${week}`}   // keep this so it refetches on RPC/chain change
+        league={l.addr}
+        owner={(walletAddr as Address) || ZERO}
+        week={week}
+        variant="team"
+      />
+    </div>
+  )}
+</div>
+
 
         {/* Actions */}
         <div className="mt-5 flex gap-2">
@@ -903,7 +932,7 @@ function LeagueCard({
             </button>
           )}
           <a
-            href={`https://testnet.snowtrace.io/address/${l.addr}`}
+            href={`${chainId === 43113 ? 'https://testnet.snowtrace.io/address/' : 'https://snowtrace.io/address/'}${l.addr}`}
             target="_blank"
             rel="noopener noreferrer"
             className="hover:underline"
