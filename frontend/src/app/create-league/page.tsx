@@ -8,7 +8,7 @@ import {
   keccak256,
   toBytes,
   type Hex,
-  parseEventLogs,   // 👈 add this
+  parseEventLogs,
 } from 'viem';
 import { toast } from 'react-hot-toast';
 import {
@@ -17,15 +17,12 @@ import {
   LEAGUE_ABI,
 } from '@/lib/LeagueContracts';
 
-/** Minimal, correct ABI for the deployed function */
+const ZIMA = '#37c0f6';
+const EGGSHELL = '#F0EAD6';
+const MIN_BUYIN_AVAX = '0.001'; // validation only (no visible hint)
+
 const SETPW_BYTES32_ABI = [
-  {
-    type: 'function',
-    name: 'setJoinPassword',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'passwordHash', type: 'bytes32' }],
-    outputs: [],
-  },
+  { type: 'function', name: 'setJoinPassword', stateMutability: 'nonpayable', inputs: [{ name: 'passwordHash', type: 'bytes32' }], outputs: [] },
 ] as const;
 
 export default function CreateLeaguePage() {
@@ -42,6 +39,7 @@ export default function CreateLeaguePage() {
   const [wantsPassword, setWantsPassword] = useState(false);
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showPwHelp, setShowPwHelp] = useState(false);
 
   const teamOptions = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20];
 
@@ -49,9 +47,7 @@ export default function CreateLeaguePage() {
     let id: ReturnType<typeof setTimeout> | undefined;
     (async function loop() {
       try {
-        const res = await fetch(
-          'https://api.coingecko.com/api/v3/simple/price?ids=avalanche-2&vs_currencies=usd'
-        );
+        const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=avalanche-2&vs_currencies=usd');
         const data = await res.json();
         setAvaxPrice(data['avalanche-2']?.usd ?? null);
       } catch {}
@@ -75,8 +71,8 @@ export default function CreateLeaguePage() {
     let buyInAmount = 0n;
     if (!isFree) {
       const f = parseFloat(buyIn || '0');
-      if (!Number.isFinite(f) || f <= 0) { toast.error('Enter a valid buy-in > 0'); return; }
-      if (f > 10) { toast.error('Buy-In must be ≤ 10 AVAX'); return; }
+      if (!Number.isFinite(f)) { toast.error('Enter a valid buy-in'); return; }
+      if (f < parseFloat(MIN_BUYIN_AVAX)) { toast.error('You must enter at least 0.001 AVAX.'); return; } // <- exact copy
       try { buyInAmount = parseEther(buyIn); } catch { toast.error('Invalid buy-in amount'); return; }
     }
 
@@ -88,7 +84,6 @@ export default function CreateLeaguePage() {
     const toastId = toast.loading('Creating league…');
 
     try {
-      // 1) Create league
       const txHash = await writeContractAsync({
         address: LEAGUE_FACTORY_ADDRESS as `0x${string}`,
         abi: LEAGUE_FACTORY_ABI,
@@ -97,27 +92,19 @@ export default function CreateLeaguePage() {
         account: address,
       });
 
-      // 2) Wait for receipt
       const receipt = await publicClient!.waitForTransactionReceipt({ hash: txHash as Hex });
 
-      // 2a) Robustly parse the LeagueCreated event
       let newLeague: `0x${string}` | undefined;
       try {
         const parsed = parseEventLogs({
           abi: LEAGUE_FACTORY_ABI as any,
           logs: receipt.logs,
           eventName: 'LeagueCreated',
-          strict: false, // tolerate unknown logs in the receipt
+          strict: false,
         });
-        if (parsed.length) {
-          // event LeagueCreated(address indexed leagueAddress, address indexed creator)
-          newLeague = (parsed[0].args as any).leagueAddress as `0x${string}`;
-        }
-      } catch {
-        // ignore and fall back
-      }
+        if (parsed.length) newLeague = (parsed[0].args as any).leagueAddress as `0x${string}`;
+      } catch {}
 
-      // 2b) Fallback: read the latest league created by this wallet
       if (!newLeague) {
         const list = (await publicClient!.readContract({
           address: LEAGUE_FACTORY_ADDRESS as `0x${string}`,
@@ -129,7 +116,6 @@ export default function CreateLeaguePage() {
       }
       if (!newLeague) throw new Error('LeagueCreated log not found');
 
-      // 2.5) Verify commissioner = this wallet (avoids onlyCommissioner revert)
       const commissioner = (await publicClient!.readContract({
         abi: LEAGUE_ABI,
         address: newLeague,
@@ -141,10 +127,8 @@ export default function CreateLeaguePage() {
         return;
       }
 
-      // 3) Optionally set join password
       if (wantsPassword) {
         const pwdHash = keccak256(toBytes(password)) as Hex;
-
         const sim = await publicClient!.simulateContract({
           address: newLeague,
           abi: SETPW_BYTES32_ABI,
@@ -152,105 +136,129 @@ export default function CreateLeaguePage() {
           args: [pwdHash],
           account: address,
         });
-
         const pwdTx = await writeContractAsync(sim.request);
         await publicClient!.waitForTransactionReceipt({ hash: pwdTx as Hex });
       }
 
-      toast.success('✅ League created!', { id: toastId });
+      try {
+        await navigator.clipboard.writeText(newLeague);
+        toast.success('✅ League created! Address copied to clipboard.', { id: toastId });
+      } catch {
+        toast.success('✅ League created!', { id: toastId });
+      }
+
+      toast(() => (
+        <span>
+          New League: <code style={{ fontFamily: 'mono' }}>{newLeague}</code>{' '}
+          <a href={`https://testnet.snowtrace.io/address/${newLeague}`} target="_blank" rel="noreferrer" style={{ color: ZIMA, marginLeft: 8 }}>
+            View on Snowtrace →
+          </a>
+        </span>
+      ), { duration: 6000 });
+
       window.location.href = '/';
     } catch (err: any) {
       console.error(err);
-      const msg =
-        err?.shortMessage ||
-        err?.cause?.reason ||
-        err?.details ||
-        err?.message ||
-        'Transaction failed';
+      const msg = err?.shortMessage || err?.cause?.reason || err?.details || err?.message || 'Transaction failed';
       toast.error(msg, { id: toastId });
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 to-black p-6">
-      <div className="bg-gray-950/70 border border-gray-800 rounded-2xl shadow-2xl p-8 w-full max-w-2xl text-white">
-        <h1 className="text-4xl font-bold mb-2 text-center">Create League</h1>
+    <div className="min-h-screen px-4 sm:px-6 py-10" style={{ backgroundImage: 'linear-gradient(to bottom right, #0b0b14, #000000)', color: EGGSHELL }}>
+      <h1 className="mb-3 text-center text-4xl font-extrabold tracking-tight" style={{ color: ZIMA }}>
+        Create League
+      </h1>
 
-        {avaxPrice && (
-          <div className="mb-8 text-center text-sm text-gray-300">
-            <span className="font-semibold text-purple-400">AVAX Price:</span>{' '}
-            ${avaxPrice.toFixed(2)} USD
-          </div>
-        )}
-
-        {/* League Name */}
+      {avaxPrice && (
         <div className="mb-6 text-center">
-          <label className="block mb-3 text-lg font-bold text-purple-400 uppercase tracking-wide">
-            League Name
-          </label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            maxLength={32}
-            className="mx-auto block w-full max-w-xl bg-black/40 text-white p-3 rounded-xl border border-gray-700 focus:ring-2 focus:ring-purple-600 outline-none"
-          />
+          <span className="inline-flex items-center rounded-full border px-3 py-1 text-xs" style={{ borderColor: 'rgba(255,255,255,.15)', background: 'rgba(255,255,255,.05)' }}>
+            AVAX price • <span className="ml-1 font-semibold" style={{ color: ZIMA }}>${avaxPrice.toFixed(2)}</span>
+          </span>
         </div>
+      )}
 
-        {/* Free / Buy-In Toggle */}
-        <div className="flex gap-4 mb-6 justify-center">
-          <button
-            type="button"
-            className={`px-5 py-2.5 rounded-xl font-semibold transition ${
-              isFree ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-            }`}
-            onClick={() => { setIsFree(true); setBuyIn(''); }}
-          >
-            Free
-          </button>
-          <button
-            type="button"
-            className={`px-5 py-2.5 rounded-xl font-semibold transition ${
-              !isFree ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-            }`}
-            onClick={() => setIsFree(false)}
-          >
-            Buy-In
-          </button>
-        </div>
-
-        {/* Buy-In Amount */}
-        {!isFree && (
-          <div className="mb-8 text-center">
-            <label className="block mb-3 text-lg font-bold text-purple-400 uppercase tracking-wide">
-              Buy-In Amount (in AVAX)
-            </label>
+      <div className="mx-auto w-full max-w-2xl rounded-2xl border border-white/10 bg-black/30 p-5 shadow-2xl shadow-black/30">
+        {/* League Name — label with spacing; counter on the right */}
+        <div className="mb-5 text-center">
+          <label className="mb-2 block text-sm" style={{ color: EGGSHELL }}>League Name</label>
+          <div className="mx-auto flex w-full max-w-md items-center gap-2">
             <input
               type="text"
-              inputMode="decimal"
-              placeholder="e.g. 1.5"
-              value={buyIn}
-              onChange={(e) => handleBuyInChange(e.target.value)}
-              className="mx-auto block w-full max-w-xl bg-black/40 text-white p-3 rounded-xl border border-purple-600 focus:ring-2 focus:ring-purple-600 outline-none"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              maxLength={32}
+              placeholder="e.g. Sunday Legends"
+              className="block w-full rounded-xl border border-white/15 bg-white/5 px-3 py-2 outline-none focus:ring-2"
+              style={{ color: EGGSHELL }}
             />
+            <span className="text-[11px] opacity-60">{name.length}/32</span>
+          </div>
+        </div>
+
+        {/* Buy-In — title above toggle; extra padding when FREE is selected */}
+        <div className={`text-center ${isFree ? 'mb-6' : 'mb-2'}`}>
+          <div className="mb-2 text-sm" style={{ color: EGGSHELL }}>Buy-In</div>
+          <div className="flex justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => { setIsFree(true); setBuyIn(''); }}
+              className="rounded-xl px-4 py-2 font-semibold"
+              style={{
+                background: isFree ? ZIMA : 'transparent',
+                color: isFree ? '#0b0b14' : EGGSHELL,
+                border: `1px solid ${isFree ? ZIMA : 'rgba(255,255,255,.15)'}`,
+              }}
+            >
+              Free
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsFree(false)}
+              className="rounded-xl px-4 py-2 font-semibold"
+              style={{
+                background: !isFree ? ZIMA : 'transparent',
+                color: !isFree ? '#0b0b14' : EGGSHELL,
+                border: `1px solid ${!isFree ? ZIMA : 'rgba(255,255,255,.15)'}`,
+              }}
+            >
+              Buy-In
+            </button>
+          </div>
+        </div>
+
+        {/* Buy-In amount (only when Buy-In selected) */}
+        {!isFree && (
+          <div className="mb-5 text-center">
+            <div className="mx-auto w-full max-w-md">
+              <label className="mb-2 block text-sm" style={{ color: EGGSHELL }}>Amount (AVAX)</label>
+              <input
+                type="text"
+                inputMode="decimal"
+                placeholder="< 0.001 AVAX"   // <- requested placeholder
+                value={buyIn}
+                onChange={(e) => handleBuyInChange(e.target.value)}
+                className="block w-full rounded-xl border px-3 py-2 outline-none focus:ring-2"
+                style={{ color: EGGSHELL, borderColor: ZIMA, background: 'rgba(255,255,255,.04)' }}
+              />
+            </div>
           </div>
         )}
 
-        {/* Number of Teams */}
-        <div className="mb-8 text-center">
-          <label className="block mb-3 text-lg font-bold text-purple-400 uppercase tracking-wide">
-            Number of Teams
-          </label>
-          <div className="mx-auto grid grid-cols-5 gap-3 max-w-xl">
+        {/* Number of Teams — one-line pills with more top spacing from the Free state */}
+        <div className="mb-5 text-center">
+          <div className="mb-2 text-sm" style={{ color: EGGSHELL }}>Number of Teams</div>
+          <div className="mx-auto flex max-w-full flex-wrap items-center justify-center gap-2 overflow-x-auto whitespace-nowrap">
             {teamOptions.map((n) => (
               <button
                 key={n}
                 onClick={() => setTeamCount(n)}
-                className={`py-2 rounded-xl border font-medium transition ${
-                  teamCount === n
-                    ? 'bg-purple-600 text-white border-purple-600'
-                    : 'bg-gray-800 text-gray-300 border-gray-700 hover:border-white'
-                }`}
+                className="rounded-xl border px-3 py-1.5 text-sm font-medium"
+                style={{
+                  borderColor: teamCount === n ? ZIMA : 'rgba(255,255,255,.15)',
+                  background: teamCount === n ? 'rgba(55,192,246,.15)' : 'rgba(255,255,255,.04)',
+                  color: EGGSHELL,
+                }}
               >
                 {n}
               </button>
@@ -258,50 +266,74 @@ export default function CreateLeaguePage() {
           </div>
         </div>
 
-        {/* Password toggle + input */}
-        <div className="mb-2 text-center">
-          <button
-            type="button"
-            onClick={() => setWantsPassword((v) => !v)}
-            className={`mx-auto mb-3 block px-5 py-2.5 rounded-xl font-semibold transition ${
-              wantsPassword ? 'bg-purple-600 text-white' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
-            }`}
-          >
-            {wantsPassword ? 'Require Password ✓' : 'Require Password'}
-          </button>
+        {/* Password section */}
+        <div className="mb-5 text-center">
+          <div className="mb-2 text-sm" style={{ color: EGGSHELL }}>Password</div>
+
+          <div className="mb-2 flex items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => setWantsPassword((v) => !v)}
+              className="rounded-xl px-4 py-2 font-semibold"
+              style={{
+                background: wantsPassword ? ZIMA : 'transparent',
+                color: wantsPassword ? '#0b0b14' : EGGSHELL,
+                border: `1px solid ${wantsPassword ? ZIMA : 'rgba(255,255,255,.15)'}`,
+              }}
+            >
+              {wantsPassword ? 'Require Password ✓' : 'Require Password'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowPwHelp(v => !v)}
+              title="What does this do?"
+              className="grid h-8 w-8 place-items-center rounded-full border text-xs"
+              style={{ borderColor: 'rgba(255,255,255,.2)', background: 'rgba(255,255,255,.06)', color: EGGSHELL }}
+            >
+              ?
+            </button>
+          </div>
+
+          {showPwHelp && (
+            <div className="mx-auto mb-2 max-w-md rounded-xl border border-white/10 bg-white/[0.04] p-3 text-xs">
+              If enabled, players must enter a password to join. The contract validates the password hash on-chain.
+            </div>
+          )}
 
           {wantsPassword && (
-            <>
-              <div className="mx-auto flex w-full max-w-xl items-center gap-2">
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  placeholder="Enter league password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="flex-1 bg-black/40 text-white p-3 rounded-xl border border-purple-600 focus:ring-2 focus:ring-purple-600 outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(s => !s)}
-                  className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm hover:border-purple-400/60"
-                >
-                  {showPassword ? 'Hide' : 'Show'}
-                </button>
-              </div>
-              <p className="mt-2 text-xs text-gray-400">
-                Your password is stored as <code>keccak256(bytes(password))</code> on-chain.
-              </p>
-            </>
+            <div className="mx-auto flex w-full max-w-md items-center gap-2">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                placeholder="Enter league password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="flex-1 rounded-xl border px-3 py-2 outline-none focus:ring-2"
+                style={{ color: EGGSHELL, borderColor: ZIMA, background: 'rgba(255,255,255,.04)' }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(s => !s)}
+                className="rounded-lg border px-3 py-2 text-sm hover:opacity-90"
+                style={{ borderColor: 'rgba(255,255,255,.15)', background: 'rgba(255,255,255,.05)', color: EGGSHELL }}
+              >
+                {showPassword ? 'Hide' : 'Show'}
+              </button>
+            </div>
           )}
         </div>
 
-        <button
-          onClick={handleSubmit}
-          disabled={isPending}
-          className="mt-6 w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white py-3 rounded-xl font-bold transition disabled:opacity-50"
-        >
-          {isPending ? 'Creating League…' : 'Submit'}
-        </button>
+        {/* Submit — narrower */}
+        <div className="flex justify-center">
+          <button
+            onClick={handleSubmit}
+            disabled={isPending}
+  className="mt-1 w-full max-w-sm rounded-xl px-6 py-3 font-bold transition disabled:opacity-50"
+            style={{ backgroundColor: ZIMA, color: '#0b0b14' }}
+          >
+            {isPending ? 'Creating…' : 'Create League'}
+          </button>
+
+        </div>
       </div>
     </div>
   );
