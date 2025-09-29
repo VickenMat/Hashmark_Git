@@ -4,11 +4,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useAccount, useChainId, usePublicClient, useReadContract, useReadContracts } from 'wagmi';
-import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { LEAGUE_FACTORY_ABI, factoryAddressForChain } from '@/lib/LeagueContracts';
-import { useTeamProfile, generatedLogoFor } from '@/lib/teamProfile';
+import { useTeamProfile } from '@/lib/teamProfile';
+import CurrentMatchupCard from '@/components/CurrentMatchupCard';
+import { activeWeekKey } from '@/lib/matchups';
 
 type Address = `0x${string}`;
+const ZERO: Address = '0x0000000000000000000000000000000000000000';
 
 /* ------------------- Theme constants ------------------- */
 const ZIMA = '#37c0f6';        // "zima blue"
@@ -22,6 +24,7 @@ const LEAGUE_ABI = [
   { type: 'function', name: 'buyInToken', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
   { type: 'function', name: 'createdAt', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'getTeams', stateMutability: 'view', inputs: [], outputs: [{ type: 'tuple[]', components: [{ name: 'owner', type: 'address' }, { name: 'name', type: 'string' }]}] },
+  // returns: draftType(uint8), draftTime(uint64), roundCount(uint8), completed(bool), order(address[])
   { type: 'function', name: 'getDraftSettings', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }, { type: 'uint64' }, { type: 'uint8' }, { type: 'bool' }, { type: 'address[]' }] },
   { type: 'function', name: 'teamCap', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'commissioner', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
@@ -60,7 +63,7 @@ const toTeamArr = (v: unknown): TeamTuple[] => (Array.isArray(v) ? (v as TeamTup
 
 type LeagueCardData = {
   addr: Address; name?: string; buyIn?: bigint; buyInToken?: Address; createdAt?: number;
-  filled: number; cap: number; draftCompleted: boolean; draftTs: number;
+  filled: number; cap: number; draftCompleted: boolean; draftTs: number; draftOrder: Address[];
   homeName: string; awayName: string; homeOwner?: Address; awayOwner?: Address;
   homeScore: number; awayScore: number; homeProj: number; awayProj: number; record: string;
   isArchived: boolean; isMember: boolean; owed?: bigint; isCommissioner: boolean;
@@ -69,10 +72,10 @@ type LeagueCardData = {
 
 /* ------------------- Reorder modal ------------------- */
 function ReorderModal({
-  open, onClose, leagues, order, setOrder, walletKey,
+  open, onClose, leagues, order, setOrder, walletKey, onSaved,
 }: {
   open: boolean; onClose: () => void; leagues: LeagueCardData[]; order: string[];
-  setOrder: (next: string[]) => void; walletKey: string;
+  setOrder: (next: string[]) => void; walletKey: string; onSaved: () => void;
 }) {
   const [list, setList] = useState<string[]>([]);
 
@@ -91,7 +94,7 @@ function ReorderModal({
     const next = [...list]; const [m] = next.splice(from, 1); next.splice(i, 0, m);
     dragIdx.current = i; setList(next);
   };
-  const save = () => { setOrder(list); writeLS(walletKey, list); onClose(); };
+  const save = () => { setOrder(list); writeLS(walletKey, list); onClose(); onSaved(); };
   if (!open) return null;
 
   const nameByAddr = new Map(leagues.map(l => [l.addr, l.name ?? 'League']));
@@ -177,6 +180,28 @@ export default function Home() {
   useEffect(() => writeLS(ORDER_KEY, order), [ORDER_KEY, order]);
 
   const [modalOpen, setModalOpen] = useState(false);
+
+  // ---- active week synced to localStorage
+  const [week, setWeek] = useState<number>(() => {
+    if (typeof window === 'undefined') return 1;
+    try {
+      const raw = localStorage.getItem(activeWeekKey());
+      const n = raw ? Number(JSON.parse(raw)) : 1;
+      return Number.isFinite(n) && n > 0 ? n : 1;
+    } catch { return 1; }
+  });
+  useEffect(() => {
+    const on = () => {
+      try {
+        const raw = localStorage.getItem(activeWeekKey());
+        if (!raw) return;
+        const n = Number(JSON.parse(raw));
+        if (Number.isFinite(n) && n > 0) setWeek(n);
+      } catch {}
+    };
+    window.addEventListener('storage', on);
+    return () => window.removeEventListener('storage', on);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -309,6 +334,7 @@ export default function Home() {
       const isMember = Boolean(lowerWallet && teams.some((t) => t.owner?.toLowerCase() === lowerWallet));
       const draftCompleted = Boolean(settings?.[3] ?? false);
       const draftTs = Number(settings?.[1] ?? 0n);
+      const draftOrder = (settings?.[4] ?? []) as Address[];
 
       const team0 = teams[0];
       const team1 = teams[1];
@@ -316,7 +342,7 @@ export default function Home() {
       const n1 = (team1?.name && team1.name.trim()) || (team1?.owner ? `${team1.owner.slice(0, 6)}…${team1.owner.slice(-4)}` : 'Team B');
 
       arr.push({
-        addr: address, name, buyIn, buyInToken, createdAt, filled, cap, draftCompleted, draftTs,
+        addr: address, name, buyIn, buyInToken, createdAt, filled, cap, draftCompleted, draftTs, draftOrder,
         homeName: n0, awayName: n1, homeOwner: team0?.owner, awayOwner: team1?.owner,
         homeScore: 0, awayScore: 0, homeProj: 0, awayProj: 0, record: '0–0',
         isArchived: archived.includes(address), isMember, owed,
@@ -379,6 +405,14 @@ export default function Home() {
     setTimeout(recomputeActive, 250);
   };
   useEffect(() => { recomputeActive(); }, [isLg, filtered.length]);
+
+  // ensure arrows keep working after reorder or toggles
+  useEffect(() => {
+    const el = railRef.current;
+    if (el) el.scrollTo({ left: 0 });
+    setTimeout(recomputeActive, 0);
+  }, [order, archivedOnly, perPage, filtered.length]);
+
   const onRailScroll = () => recomputeActive();
   const jumpToIndex = (idx: number) => scrollToPage(Math.floor(idx / perPage));
 
@@ -498,6 +532,7 @@ export default function Home() {
                     restore={(a) => restore(a)}
                     archivedView={archivedOnly}
                     walletAddr={wallet as Address | undefined}
+                    week={week}
                   />
                 </div>
               </section>
@@ -514,6 +549,7 @@ export default function Home() {
                           restore={(a) => restore(a)}
                           archivedView={archivedOnly}
                           walletAddr={wallet as Address | undefined}
+                          week={week}
                         />
                       </div>
                     ))}
@@ -608,6 +644,13 @@ export default function Home() {
         order={order}
         setOrder={setOrder}
         walletKey={ORDER_KEY}
+        onSaved={() => {
+          const el = railRef.current;
+          if (el) el.scrollTo({ left: 0 });
+          setTimeout(() => {
+            if (el) setActiveRange([0, (perPage - 1)]);
+          }, 0);
+        }}
       />
     </main>
   );
@@ -639,18 +682,17 @@ function CTA({ href, intent, children }: { href: string; intent: 'create' | 'joi
 
 /* ------------------- LeagueCard ------------------- */
 function LeagueCard({
-  l, now, archive, restore, archivedView, walletAddr,
+  l, now, archive, restore, archivedView, walletAddr, week,
 }: {
   l: LeagueCardData; now: number;
   archive: (addr: string) => void; restore: (addr: string) => void;
-  archivedView: boolean; walletAddr?: Address | undefined;
+  archivedView: boolean; walletAddr?: Address | undefined; week: number;
 }) {
   const draftDate = l.draftTs > 0 ? new Date(l.draftTs * 1000) : null;
   const left = Math.max(0, l.draftTs - now);
   const t = secsTo(left);
 
-  const homeProf = useTeamProfile(l.addr, l.homeOwner, { name: l.homeName });
-  const awayProf = useTeamProfile(l.addr, l.awayOwner, { name: l.awayName });
+  const myProfile  = useTeamProfile(l.addr, walletAddr, { name: '—' });
 
   const copy = (text: string) => navigator.clipboard.writeText(text);
 
@@ -659,83 +701,42 @@ function LeagueCard({
   const progressPct = l.filled > 0 ? Math.round((paidProgress / l.filled) * 100) : isFreeLeague ? 100 : 0;
   const fullnessPct = l.cap > 0 ? Math.round((l.filled / l.cap) * 100) : 0;
 
-  const paymentBadge =
-    !isFreeLeague && l.owed !== undefined
-      ? l.owed > 0n
-        ? <span className="inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-100/10 px-2.5 py-1 text-xs ring-1 ring-amber-300/30" style={{ color: EGGSHELL }}>Owe {formatAvax(l.owed)}</span>
-        : <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-100/10 px-2.5 py-1 text-xs ring-1 ring-emerald-300/30" style={{ color: EGGSHELL }}>Paid</span>
-      : null;
+  const paymentBarClass = isFreeLeague ? 'from-emerald-400 to-emerald-500'
+    : (progressPct >= 100 ? 'from-emerald-400 to-emerald-500'
+      : progressPct <= 32 ? 'from-red-500 to-red-500'
+      : progressPct <= 66 ? 'from-orange-400 to-orange-500'
+      : 'from-yellow-400 to-yellow-500');
 
-  // --- Live matchup ordering + Bye Week fallback ---
-  const myAddrL = walletAddr?.toLowerCase();
-  const sides = [
-    { owner: l.homeOwner, name: homeProf.name || l.homeName, score: l.homeScore, proj: l.homeProj, img: chooseAvatarUrl(homeProf.logo, l.homeOwner) },
-    { owner: l.awayOwner, name: awayProf.name || l.awayName, score: l.awayScore, proj: l.awayProj, img: chooseAvatarUrl(awayProf.logo, l.awayOwner) },
-  ];
-  let leftIdx = 0, rightIdx = 1;
-  if (myAddrL) {
-    const i0 = sides[0].owner?.toLowerCase() === myAddrL;
-    const i1 = sides[1].owner?.toLowerCase() === myAddrL;
-    if (i1) { leftIdx = 1; rightIdx = 0; }
-    else if (i0) { leftIdx = 0; rightIdx = 1; }
-  }
-  const leftSide = sides[leftIdx];
-  let rightSide = sides[rightIdx];
-  if (l.filled <= 1 && myAddrL && leftSide.owner?.toLowerCase() === myAddrL) {
-    rightSide = { owner: undefined as any, name: 'Bye Week', score: 0, proj: 0, img: chooseAvatarUrl(undefined, 'bye-week' as any) };
-  }
+  const teamsBarClass = (fullnessPct >= 100 ? 'from-emerald-400 to-emerald-500'
+    : fullnessPct <= 32 ? 'from-red-500 to-red-500'
+    : fullnessPct <= 66 ? 'from-orange-400 to-orange-500'
+    : 'from-yellow-400 to-yellow-500');
 
-  // matchup % based on projection
-  let leftPct: number;
-  if (leftSide.name === 'Bye Week') leftPct = 0;
-  else if (rightSide.name === 'Bye Week') leftPct = 100;
-  else {
-    const projSum = (leftSide.proj ?? 0) + (rightSide.proj ?? 0);
-    leftPct = projSum > 0 ? Math.round((leftSide.proj / projSum) * 100) : 50;
-  }
-  const rightPct = 100 - leftPct;
-
-  // ----- Bar colors by thresholds -----
-  const barClassByPct = (pct: number) => {
-    if (pct >= 100) return 'from-emerald-400 to-emerald-500';
-    if (pct <= 32)   return 'from-red-500 to-red-500';
-    if (pct <= 66)   return 'from-orange-400 to-orange-500';
-    return 'from-yellow-400 to-yellow-500'; // 66.01–99
-  };
-  const paymentBarClass = isFreeLeague ? 'from-emerald-400 to-emerald-500' : barClassByPct(progressPct);
-  const teamsBarClass   = barClassByPct(fullnessPct);
-
-  // Compute "Pick X" for wallet if draft order exists (settings[4])
-  // Note: this uses the wallet's position in the saved draft order array.
-  const draftOrder = (metaResFor(l.addr)?.draftOrder ?? []) as Address[];
-  const myPick = walletAddr && draftOrder.length > 0
-    ? (draftOrder.findIndex(a => a?.toLowerCase() === walletAddr.toLowerCase()) + 1 || undefined)
+  // Compute my pick from draft order
+  const myPick = walletAddr && l.draftOrder.length > 0
+    ? (l.draftOrder.findIndex(a => a?.toLowerCase() === walletAddr.toLowerCase()) + 1 || undefined)
     : undefined;
 
+  // Uniform content box height
+  const boxClass = 'rounded-2xl border border-white/10 bg-white/[0.03] p-4 min-h-[185px]';
+
   return (
-    // Removed subtle outer background; keep a single card with eggshell border
-    <div className="h-[500px] rounded-2xl border p-4" style={{ borderColor: EGGSHELL }}>
+    // Single card with eggshell border
+    <div className="h-[490px] rounded-2xl border p-4" style={{ borderColor: EGGSHELL }}>
       <div className="group flex h-full flex-col rounded-2xl">
         {/* Name */}
         <h3 className="mb-2 text-center text-2xl font-extrabold tracking-tight" style={{ color: ZIMA }}>
           {l.name || 'Unnamed League'}
         </h3>
 
-        {/* Centered addresses */}
+        {/* Team Name + Wallet */}
         <div className="mb-3 space-y-2 text-[12px] sm:text-[13px]" style={{ color: EGGSHELL }}>
           <div className="flex flex-wrap items-center justify-center gap-2 text-center">
-            <span className="font-semibold" style={{ color: ZIMA }}>League Address</span>
-            <code className="break-all font-mono text-[11px]">{l.addr}</code>
-            <button
-              onClick={() => copy(l.addr)}
-              className="rounded-md border border-white/10 bg-white/10 px-2 py-0.5 text-[10px] hover:bg-white/15"
-              style={{ color: EGGSHELL }}
-            >
-              Copy
-            </button>
+            <span className="font-semibold" style={{ color: ZIMA }}>Team Name</span>
+            <span className="font-mono text-[12px]">{myProfile.name || '—'}</span>
           </div>
           <div className="flex flex-wrap items-center justify-center gap-2 text-center">
-            <span className="font-semibold" style={{ color: EGGSHELL }}>Wallet Address</span>
+            <span className="font-semibold">Wallet Address</span>
             <code className="break-all font-mono text-[11px]">{(walletAddr ?? '—')}</code>
             <button
               onClick={() => walletAddr && copy(walletAddr)}
@@ -750,7 +751,11 @@ function LeagueCard({
 
         {/* Pills */}
         <div className="mb-2 flex flex-wrap items-center justify-center gap-2 text-xs" style={{ color: EGGSHELL }}>
-          {paymentBadge}
+          {!isFreeLeague && l.owed !== undefined && (
+            l.owed > 0n
+              ? <span className="inline-flex items-center gap-2 rounded-full border border-amber-400/30 bg-amber-100/10 px-2.5 py-1 text-xs ring-1 ring-amber-300/30" style={{ color: EGGSHELL }}>Owe {formatAvax(l.owed)}</span>
+              : <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-100/10 px-2.5 py-1 text-xs ring-1 ring-emerald-300/30" style={{ color: EGGSHELL }}>Paid</span>
+          )}
           {l.isCommissioner && (
             <span
               className="rounded-full border px-2 py-1"
@@ -766,30 +771,43 @@ function LeagueCard({
         </div>
 
         {/* Progress */}
-        <div className="mx-auto mb-5 w-full max-w-md">
-          <div className="mb-1 flex items-center justify-between text-[12px] font-semibold" style={{ color: EGGSHELL }}>
-            <span>Payments</span>
-            <span className="font-bold">{isFreeLeague ? 'Free' : `${paidProgress}/${l.filled} (${progressPct}%)`}</span>
-          </div>
-          <div className="h-2 w-full rounded-full bg-white/10">
-            <div className={`h-2 rounded-full bg-gradient-to-r ${paymentBarClass}`} style={{ width: `${isFreeLeague ? 100 : progressPct}%` }} />
-          </div>
+<div className="mx-auto mb-5 flex w-full max-w-md gap-4">
+  {/* Payments */}
+  <div className="flex-1">
+    <div className="mb-1 flex items-center justify-between text-[12px] font-semibold" style={{ color: EGGSHELL }}>
+      <span>Payments</span>
+      <span className="font-bold">
+        {isFreeLeague ? 'Free' : `${paidProgress}/${l.filled} (${progressPct}%)`}
+      </span>
+    </div>
+    <div className="h-2 w-full rounded-full bg-white/10">
+      <div
+        className={`h-2 rounded-full bg-gradient-to-r ${paymentBarClass}`}
+        style={{ width: `${isFreeLeague ? 100 : progressPct}%` }}
+      />
+    </div>
+  </div>
 
-          <div className="mt-3">
-            <div className="mb-1 flex items-center justify-between text-[12px] font-semibold" style={{ color: EGGSHELL }}>
-              <span>Teams</span>
-              <span className="font-bold">{l.filled}/{l.cap} ({fullnessPct}%)</span>
-            </div>
-            <div className="h-2 w-full rounded-full bg-white/10">
-              <div className={`h-2 rounded-full bg-gradient-to-r ${teamsBarClass}`} style={{ width: `${fullnessPct}%` }} />
-            </div>
-          </div>
-        </div>
+  {/* Teams */}
+  <div className="flex-1">
+    <div className="mb-1 flex items-center justify-between text-[12px] font-semibold" style={{ color: EGGSHELL }}>
+      <span>Teams</span>
+      <span className="font-bold">{l.filled}/{l.cap} ({fullnessPct}%)</span>
+    </div>
+    <div className="h-2 w-full rounded-full bg-white/10">
+      <div
+        className={`h-2 rounded-full bg-gradient-to-r ${teamsBarClass}`}
+        style={{ width: `${fullnessPct}%` }}
+      />
+    </div>
+  </div>
+</div>
+
 
         {/* Draft / Matchup */}
         <div className="mt-1">
           {!l.draftCompleted ? (
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+            <div className={boxClass}>
               <div className="mb-0 text-center text-[11px] uppercase tracking-[0.2em]" style={{ color: ZIMA }}>Draft</div>
               {draftDate ? (
                 <>
@@ -797,7 +815,7 @@ function LeagueCard({
                     {draftDate.toLocaleDateString()} • {draftDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </div>
                   <div className="mt-0 text-center text-sm" style={{ color: EGGSHELL }}>
-                    Pick {myPick ?? 'Unknown'}
+                    {myPick ? `Pick ${myPick}` : 'Pick not set'}
                   </div>
                   {l.draftTs > now ? (
                     <div className="mt-2 grid grid-cols-4 gap-2">
@@ -813,75 +831,31 @@ function LeagueCard({
                   )}
                 </>
               ) : (
-<div className="text-center space-y-2" style={{ color: EGGSHELL }}>
-  <div className="text-xl font-bold">Draft not scheduled</div>
-  <div className="text-sm leading-relaxed">
-    <p>
-      Invite friends by sharing the <span className="font-semibold text-egg">League Address</span> 
-      and <span className="font-semibold text-egg">password</span> (if required).
-    </p>
-    <p>
-      The <span className="font-semibold text-gold">Commissioner</span> can set the draft order anytime from Draft Settings.
-    </p>
-  </div>
-</div>
-
+                <div className="text-center space-y-2" style={{ color: EGGSHELL }}>
+                  <div className="text-xl font-bold">Draft not scheduled</div>
+                  <div className="text-sm leading-relaxed">
+                    <p>
+                      Invite friends by sharing the <span className="font-semibold">League Address</span> and <span className="font-semibold">password</span> (if required).
+                    </p>
+                    <p>The <span className="font-semibold">Commissioner</span> can set the draft order anytime from Draft Settings.</p>
+                  </div>
+                </div>
               )}
             </div>
           ) : (
-            // Entire box is the link (clickable + hoverable)
-            <Link
-              href={`/league/${l.addr}/scoreboard`}
-              className="group block rounded-2xl border border-white/10 bg-white/[0.03] p-4 transition hover:-translate-y-0.5 hover:border-white/30 hover:bg-white/[0.06] hover:shadow"
-              title="Open Scoreboard"
-              aria-label="Open Scoreboard"
-            >
-              {/* Teams row: name+logo, record, proj, ytp per side */}
-              <div className="grid grid-cols-3 items-center" style={{ color: EGGSHELL }}>
-                <Side
-                  align="left"
-                  name={leftSide.name}
-                  ownerAddr={leftSide.owner}
-                  proj={leftSide.proj}
-                  ytp={9}
-                  img={leftSide.img}
-                />
-
-                {/* Centered score, very close to middle */}
-                <div className="flex flex-col items-center justify-center">
-                  <div className="text-5xl font-black tabular-nums">
-                    {leftSide.score}
-                    <span className="mx-2 text-3xl">-</span>
-                    {rightSide.score}
-                  </div>
-                </div>
-
-                <Side
-                  align="right"
-                  name={rightSide.name}
-                  ownerAddr={rightSide.owner}
-                  proj={rightSide.proj}
-                  ytp={9}
-                  img={rightSide.img}
-                />
-              </div>
-
-              {/* % meter (up under score) */}
-              <div className="mt-2">
-                <div className="flex items-center justify-between text-[11px]" style={{ color: EGGSHELL }}>
-                  <span className="tabular-nums">{leftPct}%</span>
-                  <span className="tabular-nums">{rightPct}%</span>
-                </div>
-                <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-white/10">
-                  <div className="h-full bg-emerald-500 transition-all" style={{ width: `${leftPct}%` }} />
-                </div>
-              </div>
-            </Link>
+            <div className={boxClass}>
+              <CurrentMatchupCard
+                league={l.addr}
+                owner={(walletAddr as Address) || ZERO}
+                week={week}
+                variant="team"
+              />
+            </div>
           )}
         </div>
 
         {/* Actions */}
-        <div className="mt-3 flex gap-2">
+        <div className="mt-5 flex gap-2">
           <Link
             href={`/league/${l.addr}/my-team`}
             className="flex-1 rounded-xl px-3 py-2 text-center font-semibold text-white shadow"
@@ -938,55 +912,6 @@ function LeagueCard({
             Snowtrace →
           </a>
         </div>
-      </div>
-    </div>
-  );
-}
-
-// Helper to access draft order from the existing read bundle
-function metaResFor(addr: Address): { draftOrder?: Address[] } | undefined {
-  // This function is a no-op shim so TypeScript is happy; at runtime the draft "Pick" uses local computation above.
-  return undefined;
-}
-
-/** Choose consistent avatar: profile logo if present, else deterministic geometric by owner. */
-function chooseAvatarUrl(profileLogo?: string, owner?: string) {
-  if (profileLogo && profileLogo.trim().length > 0) return profileLogo;
-  if (owner && owner.startsWith('0x')) return generatedLogoFor(owner);
-  return generatedLogoFor(owner || 'hashmark-default');
-}
-
-/* Square-ish avatar */
-function Avatar({ url, owner }: { url?: string; owner?: string }) {
-  return (
-    <img
-      src={url || chooseAvatarUrl(undefined, owner)}
-      alt="team"
-      className="h-10 w-10 rounded-xl object-cover ring-1 ring-white/10"
-    />
-  );
-}
-
-/* Side block: name+logo (one line), record, then Proj, then Yet to Play
-   Avatar is left of info for left side; right of info for right side */
-function Side({
-  name, proj, ytp, align, img, ownerAddr,
-}: {
-  name: string; proj: number; ytp: number;
-  align: 'left' | 'right'; img?: string; ownerAddr?: Address;
-}) {
-  const isRight = align === 'right';
-  return (
-    <div className="px-2 text-center" style={{ color: EGGSHELL }}>
-      <div className={`mx-auto flex max-w-full items-center justify-center gap-2`}>
-        {!isRight && <Avatar url={img} owner={ownerAddr} />}
-        <div className="min-w-0 text-center">
-          <div className="truncate font-semibold leading-tight text-[15px]">{name}</div>
-          <div className="mt-0.5 text-[11px] opacity-90">Record 0-0-0</div>
-          <div className="mt-1 text-[11px]">Proj {proj}</div>
-          <div className="text-[11px]">Yet to Play {ytp}</div>
-        </div>
-        {isRight && <Avatar url={img} owner={ownerAddr} />}
       </div>
     </div>
   );
