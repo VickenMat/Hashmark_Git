@@ -1,51 +1,69 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import "./League.sol";
+import "@openzeppelin/contracts/proxy/Clones.sol";
+import "./interfaces/ILeague.sol";
 
 contract LeagueFactory {
+    using Clones for address;
+
+    error NameRequired();
+    error TeamCountOutOfRange();
+    error TokenZero();
+
+    // Master implementation (logic) contract
+    address public immutable implementation;
+
     address[] public leagues;
     mapping(address => address[]) public leaguesByCreator;
 
     event LeagueCreated(address indexed leagueAddress, address indexed creator);
+    event ImplementationSet(address indexed impl);
+
+    constructor(address _implementation) {
+        require(_implementation != address(0), "Bad impl");
+        implementation = _implementation;
+        emit ImplementationSet(_implementation);
+    }
 
     /// @notice Create a league that uses the native AVAX token for buy-ins.
     function createLeague(
-        string memory _name,
+        string calldata _name,
         uint256 _buyInAmount,
         uint256 _teamCount
-    ) external {
-        require(bytes(_name).length > 0, "League name is required");
-        require(_teamCount > 0 && _teamCount <= 255, "Team count 1..255");
+    ) external returns (address leagueAddr) {
+        if (bytes(_name).length == 0) revert NameRequired();
+        if (!(_teamCount > 0 && _teamCount <= 255))
+            revert TeamCountOutOfRange();
 
-        // The creator is the commissioner.
-        League newLeague = new League(
+        leagueAddr = implementation.clone(); // EIP-1167 minimal proxy
+        ILeague(leagueAddr).initialize(
             msg.sender,
             _name,
-            address(0),
+            address(0), // native
             _buyInAmount,
             _teamCount
         );
 
-        address leagueAddr = address(newLeague);
         leagues.push(leagueAddr);
         leaguesByCreator[msg.sender].push(leagueAddr);
-
         emit LeagueCreated(leagueAddr, msg.sender);
     }
 
     /// @notice Create a league that uses an ERC20 token for buy-ins.
     function createLeagueERC20(
-        string memory _name,
+        string calldata _name,
         address _token,
         uint256 _buyInAmount,
         uint256 _teamCount
-    ) external {
-        require(bytes(_name).length > 0, "League name is required");
-        require(_teamCount > 0 && _teamCount <= 255, "Team count 1..255");
-        require(_token != address(0), "Token address is zero");
+    ) external returns (address leagueAddr) {
+        if (bytes(_name).length == 0) revert NameRequired();
+        if (!(_teamCount > 0 && _teamCount <= 255))
+            revert TeamCountOutOfRange();
+        if (_token == address(0)) revert TokenZero();
 
-        League newLeague = new League(
+        leagueAddr = implementation.clone();
+        ILeague(leagueAddr).initialize(
             msg.sender,
             _name,
             _token,
@@ -53,30 +71,24 @@ contract LeagueFactory {
             _teamCount
         );
 
-        address leagueAddr = address(newLeague);
         leagues.push(leagueAddr);
         leaguesByCreator[msg.sender].push(leagueAddr);
-
         emit LeagueCreated(leagueAddr, msg.sender);
     }
 
+    // Views
     function getLeagues() external view returns (address[] memory) {
         return leagues;
     }
-
     function getLeaguesByCreator(
-        address creator
+        address c
     ) external view returns (address[] memory) {
-        return leaguesByCreator[creator];
+        return leaguesByCreator[c];
     }
-
     function leaguesCount() external view returns (uint256) {
         return leagues.length;
     }
-
-    function leaguesCountByCreator(
-        address creator
-    ) external view returns (uint256) {
-        return leaguesByCreator[creator].length;
+    function leaguesCountByCreator(address c) external view returns (uint256) {
+        return leaguesByCreator[c].length;
     }
 }

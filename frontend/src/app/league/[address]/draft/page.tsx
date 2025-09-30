@@ -6,7 +6,6 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useAccount, useReadContract } from 'wagmi';
 import { useTeamProfile } from '@/lib/teamProfile';
-import { loadUISettings, parsePickPresetToSeconds } from '@/lib/draft-helpers';
 import { loadDraftState, saveDraftState, type DraftState } from '@/lib/draft-storage';
 
 type Address = `0x${string}`;
@@ -15,12 +14,25 @@ const ZERO: Address = '0x0000000000000000000000000000000000000000';
 const ZIMA = '#37c0f6';
 const EGGSHELL = '#F0EAD6';
 const RED = '#ef4444';
+const ORANGE = '#f59e0b';
 
 const LEAGUE_ABI = [
   { type: 'function', name: 'name', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
   { type: 'function', name: 'getTeams', stateMutability: 'view', inputs: [], outputs: [{ type: 'tuple[]', components: [{ name: 'owner', type: 'address' }, { name: 'name', type: 'string' }]}] },
   // draftType(uint8), draftTimestamp(uint64), orderMode(uint8), completed(bool), manual(address[]), picksTrading(bool)
   { type: 'function', name: 'getDraftSettings', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }, { type: 'uint64' }, { type: 'uint8' }, { type: 'bool' }, { type: 'address[]' }, { type: 'bool' }] },
+  // NEW: authoritative chip settings
+  {
+    type: 'function', name: 'getDraftExtras', stateMutability: 'view', inputs: [],
+    outputs: [{
+      type: 'tuple', components: [
+        { name: 'timePerPickSeconds', type: 'uint32' },
+        { name: 'thirdRoundReversal', type: 'bool' },
+        { name: 'salaryCapBudget',    type: 'uint32' },
+        { name: 'playerPool',         type: 'uint8'  },
+      ]
+    }]
+  },
   { type: 'function', name: 'commissioner', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
 ] as const;
 
@@ -41,6 +53,29 @@ const timeLabel = (secs: number) => {
   return `${Math.round(secs/3600)}H per Pick`;
 };
 
+// Local time like 09/30/2025 - 3:15 PM PDT
+function fmtLocal(ts: number) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  const date = d.toLocaleDateString(undefined, { month: '2-digit', day: '2-digit', year: 'numeric' });
+  const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
+  const tz = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+    .formatToParts(d).find(p => p.type === 'timeZoneName')?.value || '';
+  return `${date} - ${time} ${tz}`;
+}
+
+// deterministic shuffle for Random order mode
+function seededShuffle<T>(arr: T[], seed: number): T[] {
+  let s = (seed >>> 0) || 1;
+  const rand = () => (s = (s * 1664525 + 1013904223) >>> 0) / 0xffffffff;
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
 /* ---------------- Draft Room ---------------- */
 export default function DraftRoom() {
   const { address: league } = useParams<{ address: Address }>();
@@ -59,36 +94,74 @@ export default function DraftRoom() {
     abi: LEAGUE_ABI, address: league, functionName: 'getDraftSettings',
     query: { refetchInterval: 5000, staleTime: 0 }
   });
+  // NEW: authoritative chip settings
+  const extrasRes = useReadContract({
+    abi: LEAGUE_ABI, address: league, functionName: 'getDraftExtras',
+    query: { refetchInterval: 5000, staleTime: 0 }
+  });
   const commishRes = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'commissioner' });
 
   const leagueName = (nameRes.data as string) || 'League';
   const teams = (Array.isArray(teamsRes.data) ? (teamsRes.data as Team[]) : []) as Team[];
-  const isCommish = !!(wallet && commishRes.data && wallet.toLowerCase() === (commishRes.data as string).toLowerCase());
+
+  const commissioner = (commishRes.data as string | undefined)?.toLowerCase() || '';
+  const isCommish = !!(wallet && wallet.toLowerCase() === commissioner);
 
   // [type, ts, orderMode, completed, manual, picksTrading]
-  const [draftType, draftTs, , draftCompleted, manualOrder] =
+  const [draftType, draftTs, orderMode, draftCompleted, manualOrder] =
     ((settingsRes.data as any) || [0, 0n, 0, false, [], false]) as [number, bigint, number, boolean, Address[], boolean];
 
-  /* UI settings (local) */
-  const ui = loadUISettings(league);
-  const rounds = 15; // keep board height constant for now
-  const timePerPickSeconds = parsePickPresetToSeconds(ui.timePerPick ?? '60s');
-  const timePerPickText = timeLabel(timePerPickSeconds);
-  const leagueFormat = 'Redraft'; // (placeholder, wire later)
-  const thirdRoundReversal = !!ui.thirdRoundReversal;
-  const salaryBudget = Number(ui.salaryCap || '400');
-  const playerPool = ui.playerPool ?? 'all';
+  // ---- Authoritative chips from chain ----
+  const extras = extrasRes.data as undefined | {
+    timePerPickSeconds: number; thirdRoundReversal: boolean; salaryCapBudget: number; playerPool: number;
+  };
 
+  const timePerPickSeconds = extras ? Number(extras.timePerPickSeconds || 0) : 60;
+  const thirdRoundReversal = !!extras?.thirdRoundReversal;
+  const salaryBudget = extras ? Number(extras.salaryCapBudget || 400) : 400;
+  const playerPool = (extras?.playerPool === 1 ? 'rookies' : extras?.playerPool === 2 ? 'vets' : 'all') as 'all'|'rookies'|'vets';
+
+  const timePerPickText = timeLabel(timePerPickSeconds);
+  const leagueFormat = 'Redraft'; // placeholder
   const draftTypeLabel = ['Snake', 'Salary Cap', 'Autopick', 'Offline'][draftType] || 'Snake';
 
-  /* order (live) */
+  /* ----- ORDER SYNC (manual overrides any cached order) ----- */
+  const [sharedOrder, setSharedOrder] = useState<Address[]>(() => {
+    const boot = loadDraftState(league) as any;
+    return Array.isArray(boot?.order) ? (boot.order as Address[]) : [];
+  });
+
   const teamOrderR1 = useMemo<Address[]>(() => {
+    // 1) Prefer MANUAL order from chain (canonical)
+    if (Array.isArray(manualOrder) && manualOrder.some(a => a && a !== ZERO)) {
+      const base = manualOrder.filter(Boolean) as Address[];
+      while (base.length < teams.length) base.push(ZERO);
+      return base;
+    }
+
+    // 2) Otherwise, accept a commish-broadcasted order (only if host == commissioner)
+    const boot = loadDraftState(league) as any;
+    const host = boot?.host as string | undefined;
+    if (sharedOrder.length && host && host.toLowerCase() === commissioner) {
+      return [...sharedOrder];
+    }
+
+    // 3) Otherwise, Random (deterministic)
+    if (orderMode === 0) {
+      const owners = teams.map(t => t.owner);
+      const leaguePart = typeof league === 'string' && league.length >= 10 ? parseInt(league.slice(2, 10), 16) : 0;
+      const tsPart = Number(draftTs ? Number(draftTs) & 0xffffffff : 0);
+      const seed = (leaguePart ^ tsPart) >>> 0;
+      const shuffled = seededShuffle(owners, seed);
+      while (shuffled.length < teams.length) shuffled.push(ZERO);
+      return shuffled;
+    }
+
+    // 4) Fallback: joined order
     const joined = teams.map(t => t.owner);
-    const base = (manualOrder?.length ? manualOrder : joined).filter(Boolean) as Address[];
-    const cap = Math.max(base.length, teams.length);
-    while (base.length < cap) base.push(ZERO);
-    return base;
-  }, [manualOrder, teams]);
+    while (joined.length < teams.length) joined.push(ZERO);
+    return joined;
+  }, [manualOrder, sharedOrder, teams, orderMode, league, draftTs, commissioner]);
 
   // header entries with names (teams fixed left→right; order logic is per-round)
   const header = useMemo(() => teamOrderR1.map((owner, i) => {
@@ -104,10 +177,16 @@ export default function DraftRoom() {
   const inLobbyHour = startAt > 0 && now < startAt && (startAt - now) <= 3600;
 
   // local persisted state (cross-tabs via BC)
-  const boot = (): Partial<DraftState & { remaining?: number; ended?: boolean }> => loadDraftState(league) || {};
+  const boot = (): Partial<DraftState & {
+    remaining?: number;
+    ended?: boolean;
+    order?: Address[];
+    host?: string;
+  }> => loadDraftState(league) || {};
+
   const [paused, setPaused] = useState<boolean>(() => !!boot().paused);
   const [curRound, setCurRound] = useState<number>(() => boot().currentRound || 1);
-  const [curIndex, setCurIndex] = useState<number>(() => boot().currentPickIndex || 0); // 0..(teams-1) in FORWARD orientation
+  const [curIndex, setCurIndex] = useState<number>(() => boot().currentPickIndex || 0);
   const [pickStartedAt, setPickStartedAt] = useState<number>(() => boot().startedAt || 0);
   const [remaining, setRemaining] = useState<number>(() => (boot() as any).remaining ?? timePerPickSeconds);
   const [ended, setEnded] = useState<boolean>(() => !!(boot() as any).ended);
@@ -119,7 +198,7 @@ export default function DraftRoom() {
   useEffect(() => {
     try { chanRef.current = new BroadcastChannel(`draft:${league}`); }
     catch { chanRef.current = null; }
-    const onStorage = (ev: StorageEvent) => {
+    const onStorage = (ev: StorageEvent | { key?: string; newValue?: string }) => {
       if (ev.key !== `draft:${league}` || !ev.newValue) return;
       try {
         const s = JSON.parse(ev.newValue);
@@ -129,23 +208,42 @@ export default function DraftRoom() {
         if (typeof s.pickStartedAt === 'number') setPickStartedAt(s.pickStartedAt);
         if (typeof s.remaining === 'number') setRemaining(s.remaining);
         if (typeof s.ended === 'boolean') setEnded(!!s.ended);
+
+        // keep host and any commish-broadcasted order (not chips)
+        if (s.host) {
+          const prev = loadDraftState(league) || {};
+          saveDraftState(league, { ...prev, host: s.host, order: Array.isArray(s.order) ? s.order : prev['order'] } as any);
+          if (Array.isArray(s.order)) setSharedOrder(s.order as Address[]);
+        }
       } catch {}
     };
-    window.addEventListener('storage', onStorage);
+    window.addEventListener('storage', onStorage as any);
     const ch = chanRef.current;
     if (ch) ch.onmessage = (e) => onStorage({ key: `draft:${league}`, newValue: JSON.stringify(e.data) } as any);
-    return () => { window.removeEventListener('storage', onStorage); if (ch) ch.close(); };
+    return () => { window.removeEventListener('storage', onStorage as any); if (ch) ch.close(); };
   }, [league]);
 
   const broadcast = (patch: any) => {
     const prev = loadDraftState(league) || {};
-    const next = { ...prev, ...patch };
+    const next = {
+      ...prev,
+      ...patch,
+      ...(isCommish ? { host: commissioner, order: teamOrderR1 } : {})
+    };
     saveDraftState(league, next as any);
     try { localStorage.setItem(`draft:${league}`, JSON.stringify(next)); } catch {}
     const ch = chanRef.current; if (ch) ch.postMessage(next);
   };
 
+  // Commish announces authoritative order host on mount/changes
+  useEffect(() => {
+    if (!isCommish) return;
+    broadcast({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCommish, commissioner, teams.length, manualOrder?.length, orderMode, draftTs]);
+
   // helper: check if current pick is the last pick on the board
+  const rounds = 15;
   const isLastPickCell = (round: number, index: number, totalTeams: number) =>
     round >= rounds && index >= (totalTeams - 1);
 
@@ -167,13 +265,11 @@ export default function DraftRoom() {
 
     const nTeams = header.length || 1;
 
-    // If this was the very last pick, end the draft
     if (isLastPickCell(curRound, curIndex, nTeams)) {
-      handleEndDraft(); // will set ended + show modal + attempt finalize
+      handleEndDraft();
       return;
     }
 
-    // otherwise advance pointer
     const nextIndex = (curIndex + 1) % nTeams;
     const wrap = nextIndex === 0;
     const nextRound = wrap ? curRound + 1 : curRound;
@@ -181,13 +277,11 @@ export default function DraftRoom() {
     setCurIndex(nextIndex);
     setCurRound(nextRound);
 
-    // reset clocks
     const start = Math.floor(Date.now()/1000);
     setPickStartedAt(start);
     setRemaining(timePerPickSeconds);
     broadcast({ currentPickIndex: nextIndex, currentRound: nextRound, pickStartedAt: start, remaining: timePerPickSeconds });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [remaining, isLive, paused]);
+  }, [remaining, isLive, paused, timePerPickSeconds, curRound, curIndex, header.length]);
 
   // Auto-start the first pick when live begins (don’t unpause on refresh)
   useEffect(() => {
@@ -198,9 +292,10 @@ export default function DraftRoom() {
       setPickStartedAt(start);
       setRemaining(timePerPickSeconds);
       broadcast({ startedAt: start, pickStartedAt: start, remaining: timePerPickSeconds, currentRound: 1, currentPickIndex: 0, paused: false });
+    } else if (isCommish) {
+      broadcast({});
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isLive]);
+  }, [isLive, isCommish, timePerPickSeconds]);
 
   // Pause/Resume (commissioner)
   const togglePause = () => {
@@ -217,8 +312,7 @@ export default function DraftRoom() {
   };
 
   /* snake + R3 reversal */
-  const isSnakeLike = draftType === 0 || draftType === 2; // Snake & Autopick use snake board
-  // No TRR: even rounds reversed. TRR: r<3 ? even reversed : odd reversed.
+  const isSnakeLike = draftType === 0 || draftType === 2;
   const reverseRound = (r: number) => {
     if (!isSnakeLike) return false;
     return thirdRoundReversal ? (r < 3 ? (r % 2 === 0) : (r % 2 === 1)) : (r % 2 === 0);
@@ -226,27 +320,44 @@ export default function DraftRoom() {
 
   // Which visible column is "on the clock" this round?
   const currentCol = useMemo(() => {
-    if (!isSnakeLike) return curIndex; // salary cap uses forward index visually
+    if (!isSnakeLike) return curIndex;
     return reverseRound(curRound) ? (header.length - 1) - curIndex : curIndex;
   }, [curIndex, curRound, header.length, isSnakeLike]);
 
-  // Next pick owner (for box on right)
-  const nextPick = (() => {
+  // Next pick (visible coordinates)
+  const nextPickInfo = (() => {
     const n = header.length || 1;
-    // If draft has ended, no next pick
-    if (ended) return { round: curRound, pickInRound: currentCol + 1, owner: undefined as Address | undefined, name: '—' };
-
     const nextI = (curIndex + 1) % n;
-    const r = (nextI === 0) ? curRound + 1 : curRound;
+    const wrap = nextI === 0;
+    const r = wrap ? curRound + 1 : curRound;
     const col = isSnakeLike
       ? (reverseRound(r) ? (n - 1) - nextI : nextI)
       : nextI;
-    const h = header[col];
-    const pickInRound = col + 1;
-    return { round: r, pickInRound, owner: h?.owner, name: h?.name || '—' };
+    return { round: r, colVisible: col };
   })();
 
-  // My team (for subtle column highlight)
+  // arrow direction relative to visible grid
+  type ArrowDir = 'left' | 'right' | 'down' | null;
+  function arrowDirection(): ArrowDir {
+    if (!isLive || ended) return null;
+    const colNext = nextPickInfo.colVisible;
+    if (nextPickInfo.round > curRound) return 'down';
+    if (colNext > currentCol) return 'right';
+    if (colNext < currentCol) return 'left';
+    return null;
+  }
+
+  // Next pick owner (for side tile)
+  const nextPick = (() => {
+    const n = header.length || 1;
+    if (ended) return { round: curRound, pickInRound: currentCol + 1, owner: undefined as Address | undefined, name: '—' };
+    const np = nextPickInfo;
+    const h = header[np.colVisible];
+    const pickInRound = np.colVisible + 1;
+    return { round: np.round, pickInRound, owner: h?.owner, name: h?.name || '—' };
+  })();
+
+  // My team
   const me = teams.find(t => wallet && t.owner.toLowerCase() === wallet.toLowerCase());
   const myProf = useTeamProfile(league, (wallet as Address) || undefined, { name: me?.name || 'My Team' });
   const myCol = useMemo(() => {
@@ -259,32 +370,35 @@ export default function DraftRoom() {
   const [tab, setTab] = useState<Tab>('draft');
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  // Pre-draft countdown (until startAt)
+  // Pre-draft countdown
   const secsUntilStart = Math.max(0, startAt - now);
   const preDraftLobby = !isLive && startAt > 0 && !ended;
 
-  // Helper to render label Round.x with snake correction
+  // Helpers
   const pickLabelFor = (round: number, col: number, n: number) =>
     `${round}.${reverseRound(round) ? (n - col) : (col + 1)}`;
-
-  // Header/board highlight helpers
   const isCurrentHeader = (col: number) => isLive && (col === currentCol) && !paused;
   const cellIsCurrent = (round: number, col: number) => isLive && round === curRound && col === currentCol;
 
-  // ---- End Draft handler ----
+  // Reversal highlight: ONLY the true reversal entry (round 3, pick 1 visible)
+  function isTrueReversalCell(round: number, col: number, n: number): boolean {
+    if (!thirdRoundReversal || !isSnakeLike) return false;
+    if (round !== 3) return false;
+    const firstVisibleCol = reverseRound(3) ? (n - 1) : 0;
+    return col === firstVisibleCol;
+  }
+
   function handleEndDraft() {
     setEnded(true);
     setPaused(true);
     broadcast({ ended: true, paused: true });
     setShowEndModal(true);
-    attemptAutoFinalizeOnChain(); // safe no-op stub you can wire later
+    attemptAutoFinalizeOnChain();
   }
 
-  // CSV export (uses local draft-state picks)
   function exportDraftCSV() {
     const s = loadDraftState(league);
     const picks = (s?.picks || []) as Array<{ overall?: number; round: number; pickInRound?: number; slot?: number; owner: Address; player?: string }>;
-    // Compute overall & pickInRound if missing
     const withNums = picks.map((p, i) => ({
       overall: p.overall ?? (i + 1),
       round: p.round,
@@ -292,12 +406,10 @@ export default function DraftRoom() {
       owner: p.owner,
       player: p.player ?? ''
     })).sort((a,b)=> (a.overall - b.overall));
-
     const headerRow = 'Overall,Round,PickInRound,Owner,Player\n';
     const rows = withNums.map(p =>
       `${p.overall},${p.round},${p.pickInRound},"${p.owner}","${p.player.replace(/"/g,'""')}"`
     ).join('\n');
-
     const blob = new Blob([headerRow + rows], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -309,12 +421,8 @@ export default function DraftRoom() {
     URL.revokeObjectURL(url);
   }
 
-  // Placeholder to wire on-chain finalize
   function attemptAutoFinalizeOnChain() {
-    // Intentionally left as a non-breaking stub since finalize ABI wasn’t provided.
-    // Call your contract here (e.g., league.finalizeDraft(picks)) and update teams.
-    // This function is invoked automatically when the draft ends.
-    console.warn('[Draft] Auto-finalize on-chain stub called. Wire your contract write here.');
+    console.warn('[Draft] Auto-finalize on-chain stub called.');
   }
 
   return (
@@ -322,8 +430,8 @@ export default function DraftRoom() {
       {/* Title + Team pill (top-right) */}
       <div className="relative mb-3">
         <h1 className="text-center text-2xl sm:text-3xl font-extrabold tracking-tight leading-tight" style={{ color: ZIMA }}>
-          <span className="block">{leagueName}</span>
-          <span className="block sm:inline uppercase">DRAFT ROOM</span>
+          <span className="block lg:inline">{leagueName} </span>
+          <span className="block lg:inline uppercase">DRAFT ROOM</span>
         </h1>
         <div className="absolute right-0 top-0">
           <Link
@@ -353,36 +461,50 @@ export default function DraftRoom() {
             )}
           </Pill>
           <Pill>
-            Draft Start: {startAt ? new Date(startAt * 1000).toLocaleString() : '—'} · {ended ? <span className="text-emerald-400">Completed</span> : (isLive ? (paused ? <span className="text-amber-300">Paused</span> : <span className="text-emerald-400">Live</span>) : (inLobbyHour ? 'Starting Soon' : 'Scheduled'))}
+            Draft Start: {fmtLocal(startAt)} · {ended ? <span className="text-emerald-400">Completed</span> : (isLive ? (paused ? <span className="text-amber-300">Paused</span> : <span className="text-emerald-400">Live</span>) : (inLobbyHour ? 'Starting Soon' : 'Scheduled'))}
           </Pill>
         </div>
       )}
 
-      {/* Row: top tiles — force side-by-side from small screens */}
+      {/* Pause banner */}
+      {isLive && paused && (
+        <div className="mx-auto mb-2 max-w-6xl rounded-xl border border-red-500/50 bg-red-500/10 px-3 py-2 text-center font-semibold" style={{ color: RED }}>
+          Draft is paused — your commissioner will resume shortly.
+        </div>
+      )}
+
+      {/* Top tiles (side by side) */}
       <div className="mx-auto mb-2 grid max-w-6xl grid-cols-1 gap-2 sm:grid-cols-3">
-        {/* On the clock */}
-        <div className="rounded-2xl border border-white/12 bg-white/[0.06] px-4 py-3">
-          <div className="text-center text-[11px] uppercase tracking-wider text-gray-300">
-            {ended ? 'DRAFT COMPLETE' : preDraftLobby ? 'PRE DRAFT' : 'ON THE CLOCK'}
-          </div>
-          <div
-            className="text-center text-4xl font-black tabular-nums"
-            style={{
-              color: (isLive && (draftType === 0 || draftType === 2) && timePerPickSeconds > 0 && remaining <= 10) ? RED : EGGSHELL
-            }}
-          >
-            {ended
-              ? '—'
-              : preDraftLobby
-                ? fmtClock(secsUntilStart)
-                : (isLive && (draftType === 0 || draftType === 2) && timePerPickSeconds > 0)
-                  ? fmtClock(remaining)
-                  : '—'}
-          </div>
-          {/* current team name centered in ZIMA under clock when live */}
-          {!preDraftLobby && isLive && !ended && (
-            <div className="mt-2 text-center font-semibold" style={{ color: ZIMA }}>
-              {header[currentCol]?.name || '—'}
+        {/* Left tile (no arrows here) */}
+        <div className="rounded-2xl border border-white/12 bg-white/[0.06] px-4 py-3 flex items-center justify-center">
+          {ended ? (
+            <div className="text-center">
+              <div className="text-xl sm:text-2xl font-extrabold tracking-wide" style={{ color: EGGSHELL }}>
+                DRAFT IS COMPLETE
+              </div>
+            </div>
+          ) : (
+            <div className="w-full">
+              <div className="text-center text-[11px] uppercase tracking-wider text-gray-300">
+                {preDraftLobby ? 'PRE DRAFT' : 'ON THE CLOCK'}
+              </div>
+              <div
+                className="text-center text-4xl font-black tabular-nums"
+                style={{
+                  color: (isLive && (draftType === 0 || draftType === 2) && timePerPickSeconds > 0 && remaining <= 10) ? RED : EGGSHELL
+                }}
+              >
+                {preDraftLobby
+                  ? fmtClock(secsUntilStart)
+                  : (isLive && (draftType === 0 || draftType === 2) && timePerPickSeconds > 0)
+                    ? fmtClock(remaining)
+                    : '—'}
+              </div>
+              {!preDraftLobby && isLive && (
+                <div className="mt-2 text-center font-semibold" style={{ color: ZIMA }}>
+                  {header[currentCol]?.name || '—'}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -428,20 +550,18 @@ export default function DraftRoom() {
         </div>
       </div>
 
-      {/* Single-line bar */}
+      {/* Tabs row (no outer box) */}
       <div className="mx-auto mb-3 flex max-w-6xl flex-wrap items-center justify-center gap-2">
-        <div className="inline-flex rounded-2xl border border-white/12 bg-white/5 p-1 shadow-sm">
-          {(['draft','queue','history','team','all'] as const).map(k => (
-            <button
-              key={k}
-              onClick={() => setTab(k)}
-              className={`rounded-2xl px-3 py-1.5 text-sm transition ${tab === k ? 'bg-white/10' : 'hover:bg-white/5'}`}
-              style={{ color: EGGSHELL }}
-            >
-              {k === 'draft' ? 'Draft' : k === 'queue' ? 'Queue' : k === 'history' ? 'History' : k === 'team' ? 'Team' : 'All Teams'}
-            </button>
-          ))}
-        </div>
+        {(['draft','queue','history','team','all'] as const).map(k => (
+          <button
+            key={k}
+            onClick={() => setTab(k)}
+            className={`rounded-2xl px-3 py-1.5 text-sm transition border ${tab === k ? 'bg-white/10' : 'hover:bg-white/5'}`}
+            style={{ color: EGGSHELL, borderColor: k === 'draft' ? ZIMA : 'rgba(255,255,255,.16)' }}
+          >
+            {k === 'draft' ? 'Draft' : k === 'queue' ? 'Queue' : k === 'history' ? 'History' : k === 'team' ? 'Team' : 'All Teams'}
+          </button>
+        ))}
         <button
           onClick={() => setSettingsOpen(true)}
           className="rounded-2xl border border-white/15 bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15"
@@ -494,31 +614,43 @@ export default function DraftRoom() {
                   {header.map((_, col) => {
                     const isCur = cellIsCurrent(round, col);
                     const showTimer = isCur && timePerPickSeconds > 0 && (draftType === 0 || draftType === 2) && !ended;
-                    const isMineCol = myCol >= 0 && col === myCol;
-                    const baseBorder = isCur ? ZIMA : (isMineCol ? EGGSHELL : 'rgba(255,255,255,.10)');
-                    // Per your request: remove fill for my team's picks (no special background), except current which shows ZIMA style
-                    const baseBg = isCur
-                      ? 'rgba(55,192,246,0.10)'
-                      : (isMineCol ? 'rgba(0,0,0,.40)' : 'rgba(0,0,0,.40)');
+                    const n = header.length;
+
+                    const trueReversal = isTrueReversalCell(round, col, n);
+
+                    const borderColor = isCur ? ZIMA : (trueReversal ? ORANGE : 'rgba(255,255,255,.10)');
+                    const background = isCur ? 'rgba(55,192,246,0.10)' : 'rgba(0,0,0,.40)';
+
+                    const dir = isCur ? arrowDirection() : null;
 
                     return (
                       <div
                         key={`cell-${round}-${col}`}
-                        className="h-16 rounded-2xl border grid place-items-center text-sm"
-                        style={{ borderColor: baseBorder, background: baseBg }}
+                        className="relative h-16 rounded-2xl border grid place-items-center text-sm"
+                        style={{ borderColor, background }}
                       >
                         {showTimer ? (
-                          <span
-                            className="rounded px-2 py-[3px] text-[13px] font-mono"
-                            style={{
-                              color: (remaining <= 10 ? RED : EGGSHELL),
-                              background: 'rgba(255,255,255,.08)'
-                            }}
-                          >
-                            {fmtClock(remaining)}
+                          <span className="inline-flex items-center gap-1">
+                            {dir === 'left' && <span className="text-xs font-semibold" style={{ color: ZIMA }}>←</span>}
+                            <span
+                              className="rounded px-2 py-[3px] text-[13px] font-mono"
+                              style={{
+                                color: (remaining <= 10 ? RED : EGGSHELL),
+                                background: 'rgba(255,255,255,.08)'
+                              }}
+                            >
+                              {fmtClock(remaining)}
+                            </span>
+                            {dir === 'right' && <span className="text-xs font-semibold" style={{ color: ZIMA }}>→</span>}
                           </span>
                         ) : (
-                          <span className="text-gray-300">{pickLabelFor(round, col, header.length)}</span>
+                          <span className="text-gray-300">
+                            {pickLabelFor(round, col, header.length)}
+                          </span>
+                        )}
+
+                        {isCur && dir === 'down' && (
+                          <span className="absolute bottom-1 left-1/2 -translate-x-1/2 text-xs font-semibold" style={{ color: ZIMA }}>↓</span>
                         )}
                       </div>
                     );
@@ -573,6 +705,7 @@ export default function DraftRoom() {
       {showEndModal && (
         <EndDraftModal
           league={league}
+          ownerAddress={(wallet as string) || undefined}
           onClose={() => setShowEndModal(false)}
           onExportCSV={exportDraftCSV}
         />
@@ -621,11 +754,11 @@ function TeamInline({ league, owner, labelOverride }: { league: Address; owner: 
   );
 }
 
-/* ---- All Teams panel (ordered pills; click to view picks) ---- */
+/* ---- All Teams panel (team name + logo only) ---- */
 function AllTeamsPanel({ league, header }: {
   league: Address;
   header: { owner: Address; name: string }[];
-  teams: Team[]; // kept for signature, not needed now
+  teams: Team[];
 }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const state = loadDraftState(league);
@@ -683,7 +816,7 @@ function AllTeamsPanel({ league, header }: {
   );
 }
 
-/* ---- Settings modal (narrower; info left, order right) ---- */
+/* ---- Settings modal ---- */
 function SettingsModal({
   onClose, startAt, isManual, order, draftTypeLabel, playerPoolLabel, timePerPickText, trr, pickTrading,
 }: {
@@ -700,7 +833,7 @@ function SettingsModal({
   return (
     <div className="fixed inset-0 z-[60]">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="absolute left-1/2 top-1/2 w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-white/12 bg-[#0b0b12] p-5 shadow-2xl">
+      <div className="absolute left-1/2 top-1/2 w-full max-w-md -translate-x-1/2 -translate-y-1/2 rounded-3xl border border-white/12 bg-[#0b0b12] p-6 shadow-2xl">
         <button
           className="absolute right-3 top-3 rounded-md border border-white/15 bg-white/10 px-2 py-1 text-sm hover:bg-white/15"
           onClick={onClose}
@@ -711,29 +844,25 @@ function SettingsModal({
 
         <div className="mb-4 text-center text-lg font-bold" style={{ color: ZIMA }}>Draft Settings</div>
 
-        <div className="grid gap-6 md:grid-cols-2">
-          {/* Left: info */}
-          <div className="space-y-2 text-sm">
-            <Row k="Start" v={startAt ? new Date(startAt * 1000).toLocaleString() : '—'} />
-            <Row k="Type" v={draftTypeLabel} />
-            <Row k="Player Pool" v={playerPoolLabel} />
-            <Row k="Time per Pick" v={timePerPickText} />
-            <Row k="Third Round Reversal" v={trr ? 'On' : 'Off'} />
-            <Row k="Pick Trading" v={pickTrading ? 'Enabled' : 'Disabled'} />
-            <Row k="Order Mode" v={isManual ? 'Manual' : 'Random'} />
-          </div>
+        <div className="space-y-2 text-sm">
+          <Row k="Start" v={fmtLocal(startAt)} />
+          <Row k="Type" v={draftTypeLabel} />
+          <Row k="Player Pool" v={playerPoolLabel} />
+          <Row k="Time per Pick" v={timePerPickText} />
+          <Row k="Third Round Reversal" v={trr ? 'On' : 'Off'} />
+          <Row k="Pick Trading" v={pickTrading ? 'Enabled' : 'Disabled'} />
+          <Row k="Order Mode" v={isManual ? 'Manual' : 'Random'} />
+        </div>
 
-          {/* Right: order */}
-          <div className="space-y-2 text-sm">
-            <div className="mb-1 text-xs uppercase tracking-wider text-gray-300 text-center">Draft Order</div>
-            <ol className="space-y-1 text-center">
-              {order.map((name, i) => (
-                <li key={`${name}-${i}`} className="text-white/90">
-                  {i + 1}. {name}
-                </li>
-              ))}
-            </ol>
-          </div>
+        <div className="mt-5">
+          <div className="mb-2 text-xs uppercase tracking-wider text-gray-300 text-center">Draft Order</div>
+          <ol className="space-y-1 text-center">
+            {order.map((name, i) => (
+              <li key={`${name}-${i}`} className="text-white/90">
+                {i + 1}. {name}
+              </li>
+            ))}
+          </ol>
         </div>
 
         <div className="mt-5 flex justify-center">
@@ -745,19 +874,21 @@ function SettingsModal({
 }
 function Row({ k, v }: { k: string; v: string }) {
   return (
-    <div className="flex items-center gap-3">
-      <div className="w-40 shrink-0 text-gray-300">{k}:</div>
-      <div className="flex-1">{v}</div>
+    <div className="flex items-center justify-between gap-3">
+      <div className="text-gray-300">{k}</div>
+      <div className="font-medium">{v}</div>
     </div>
   );
 }
 
 /* ---- End-of-draft modal ---- */
-function EndDraftModal({ league, onClose, onExportCSV }: {
+function EndDraftModal({ league, ownerAddress, onClose, onExportCSV }: {
   league: Address;
+  ownerAddress?: string;
   onClose: () => void;
   onExportCSV: () => void;
 }) {
+  const teamHref = ownerAddress ? `/league/${league}/team/${ownerAddress}` : `/league/${league}`;
   return (
     <div className="fixed inset-0 z-[70]">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
@@ -776,8 +907,9 @@ function EndDraftModal({ league, onClose, onExportCSV }: {
         <div className="flex flex-col gap-2">
           <div className="flex justify-center gap-2">
             <Link
-              href={`/league/${league}/my-team`}
-              className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 hover:bg-white/15"
+              href={teamHref}
+              className="rounded-xl px-4 py-2 font-semibold"
+              style={{ background: ZIMA, color: '#001018' }}
             >
               My Team
             </Link>

@@ -7,11 +7,14 @@ import { useReadContract, useWatchContractEvent, useWriteContract } from 'wagmi'
 export type TeamProfile = { name?: string; logo?: string; updatedAt?: number };
 
 /* ── Deterministic geometric fallback (by owner address) ── */
-export function generatedLogoFor(seed: string): string {
+export function generatedLogoFor(seed?: string | null): string {
+  // Guard against undefined/empty inputs to avoid `seed.length` crash
+  const s = typeof seed === 'string' && seed.length ? seed : 'anon';
+
   let h1 = 0x811c9dc5, h2 = 0x1b873593;
-  for (let i = 0; i < seed.length; i++) {
-    h1 ^= seed.charCodeAt(i); h1 = Math.imul(h1, 0x85ebca6b);
-    h2 ^= seed.charCodeAt(i); h2 = Math.imul(h2, 0xc2b2ae35);
+  for (let i = 0; i < s.length; i++) {
+    h1 ^= s.charCodeAt(i); h1 = Math.imul(h1, 0x85ebca6b);
+    h2 ^= s.charCodeAt(i); h2 = Math.imul(h2, 0xc2b2ae35);
   }
   const rand = (n: number) => {
     h1 = Math.imul(h1 ^ (h1 >>> 15), 0x2c1b3c6d) ^ Math.imul(h2 ^ (h2 >>> 13), 0x297a2d39);

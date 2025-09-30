@@ -38,6 +38,28 @@ const LEAGUE_ABI = [
     ],
     outputs: [],
   },
+  // ---- NEW: authoritative chip settings on-chain ----
+  {
+    type: 'function', name: 'getDraftExtras', stateMutability: 'view', inputs: [],
+    outputs: [{
+      type: 'tuple', components: [
+        { name: 'timePerPickSeconds', type: 'uint32' },
+        { name: 'thirdRoundReversal', type: 'bool' },
+        { name: 'salaryCapBudget',    type: 'uint32' },
+        { name: 'playerPool',         type: 'uint8'  },
+      ]
+    }]
+  },
+  {
+    type: 'function', name: 'setDraftExtras', stateMutability: 'nonpayable',
+    inputs: [
+      { name: '_timePerPickSeconds', type: 'uint32' },
+      { name: '_thirdRoundReversal', type: 'bool'   },
+      { name: '_salaryCapBudget',    type: 'uint32' },
+      { name: '_playerPool',         type: 'uint8'  },
+    ],
+    outputs: []
+  },
   { type: 'function', name: 'commissioner', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
 ] as const;
 
@@ -153,11 +175,19 @@ export default function DraftSettings() {
   // reads
   const { data: teamsData } = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'getTeams' });
   const teams = ((teamsData as any[]) || []) as Team[];
-  const filledTeams = teams.filter(t => t.owner !== ZERO);
+  const filledTeams = teams.filter(t => t?.owner && t.owner !== ZERO);
 
   const { data: settings } = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'getDraftSettings' });
   const [currentType, currentTs, currentOrderMode, currentCompleted, currentManualOrder, currentPickTrading] =
     (settings as [number, bigint, number, boolean, string[], boolean] | undefined) || [0, 0n, 0, false, [], false];
+
+  // NEW: authoritative chip settings
+  const extrasRes = useReadContract({
+    abi: LEAGUE_ABI,
+    address: league,
+    functionName: 'getDraftExtras',
+    query: { refetchInterval: 5000, staleTime: 0 }
+  });
 
   /* ---------------- LOCK: within 1h to start OR live ---------------- */
   const nowSec = Math.floor(Date.now()/1000);
@@ -188,7 +218,7 @@ export default function DraftSettings() {
   const [playerPool, setPlayerPool] = useState<PlayerPool>('all');
   const [timePerPick, setTimePerPick] = useState<PickPreset>('60s');
 
-  // load persisted UI
+  // load persisted UI (only as placeholder before chain read)
   useEffect(() => {
     if (!league) return;
     const ui = loadUI(league);
@@ -198,13 +228,13 @@ export default function DraftSettings() {
     setTimePerPick(ui.timePerPick);
   }, [league]);
 
-  // persist UI whenever these change
+  // persist UI mirror (not authoritative)
   useEffect(() => {
     if (!league) return;
     saveUI(league, { salaryCap, thirdRoundReversal, playerPool, timePerPick });
   }, [league, salaryCap, thirdRoundReversal, playerPool, timePerPick]);
 
-  // prefill from chain
+  // prefill from chain (existing)
   useEffect(() => {
     setDraftType((['snake','salary','autopick','offline'] as DraftTypeKey[])[currentType] ?? 'snake');
     setOrderMode((['random','manual'] as OrderModeKey[])[currentOrderMode] ?? 'random');
@@ -235,10 +265,13 @@ export default function DraftSettings() {
   }, [orderMode, teams.length]);
 
   // randomize when joined owners change (only in Random mode)
-  const ownersSig = useMemo(() => filledTeams.map(t=>t.owner.toLowerCase()).join(','), [filledTeams]);
+  const ownersSig = useMemo(
+    () => filledTeams.map(t => (t?.owner ?? '').toLowerCase()).join(','),
+    [filledTeams]
+  );
   useEffect(() => {
     if (orderMode !== 'random') return;
-    const owners = [...filledTeams.map(t=>t.owner)];
+    const owners = [...filledTeams.map(t => t.owner)];
     for (let i=owners.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [owners[i],owners[j]]=[owners[j],owners[i]]; }
     while (owners.length < teams.length) owners.push(ZERO);
     setOrderList(prev => arraysEqual(prev, owners) ? prev : owners as `0x${string}`[]);
@@ -252,7 +285,7 @@ export default function DraftSettings() {
     return out as `0x${string}`[];
   }, [orderList, teams.length]);
 
-  // calendar
+  // Calendar popup mgmt
   const [calOpen, setCalOpen] = useState(false);
   const calRef = useRef<HTMLDivElement>(null);
   const closeCal = useCallback(() => setCalOpen(false), []);
@@ -268,8 +301,11 @@ export default function DraftSettings() {
 
   const moveTeam = (idx: number, dir: -1 | 1) => {
     setOrderList(prev => {
-      const next = [...prev]; const j = idx+dir; if (j<0 || j>=next.length) return prev;
-      [next[idx], next[j]] = [next[j], next[idx]]; return next;
+      const next = [...prev];
+      const j = idx + dir;
+      if (j < 0 || j >= next.length) return prev;
+      [next[idx], next[j]] = [next[j], next[idx]];
+      return next;
     });
   };
 
@@ -281,16 +317,53 @@ export default function DraftSettings() {
     return true;
   };
 
-  // SAVE — send manual order *only when* in Manual mode (prevents “sticky” arrays)
+  // NEW: map UI -> on-chain
+  const playerPoolToUint = (p: 'all'|'rookies'|'vets') => p === 'rookies' ? 1 : p === 'vets' ? 2 : 0;
+  const pickPresetToSeconds = (p: typeof PICK_PRESETS[number]) => {
+    if (p === 'no-limit') return 0;
+    if (p.endsWith('h')) return Number.parseInt(p) * 3600;
+    if (p.endsWith('s')) return Number.parseInt(p);
+    return 60;
+  };
+
+  // Prefill chips from chain extras when available
+  useEffect(() => {
+    const e = extrasRes.data as undefined | {
+      timePerPickSeconds: number; thirdRoundReversal: boolean; salaryCapBudget: number; playerPool: number;
+    };
+    if (!e) return;
+
+    setThirdRoundReversal(!!e.thirdRoundReversal);
+    setSalaryCap(String(e.salaryCapBudget || 400));
+    setPlayerPool(e.playerPool === 1 ? 'rookies' : e.playerPool === 2 ? 'vets' : 'all');
+
+    const secs = Number(e.timePerPickSeconds || 60);
+    const preset =
+      secs === 0 ? 'no-limit' :
+      secs % 3600 === 0 ? (`${secs/3600}h` as const) :
+      (`${secs}s` as const);
+    setTimePerPick(preset);
+  }, [extrasRes.data]);
+
+  // --------- SAFE HELPERS (fix for your runtime error) ----------
+  const nameForAddress = (addr?: `0x${string}`, idx?: number) => {
+    if (!addr || addr === ZERO) return `Team ${idx !== undefined ? idx + 1 : '?'}`;
+    const t = filledTeams.find(ft => ft?.owner && ft.owner.toLowerCase() === addr.toLowerCase());
+    return t?.name || shortAddr(addr);
+  };
+  const avatarForAddress = (addr?: `0x${string}`) =>
+    addr && addr !== ZERO ? generatedLogoFor(addr) : '/placeholder.png';
+  // --------------------------------------------------------------
+
+  // SAVE — write canonical settings to chain (then mirror to local)
   const handleSave = async () => {
     try {
       if (!validateBeforeSave()) return;
 
-      // Persist UI right before write
-      saveUI(league, { salaryCap, thirdRoundReversal, playerPool, timePerPick });
-
       const id = toast.loading('Submitting transaction…');
-      const hash = await writeContractAsync({
+
+      // 1) Base draft settings (existing)
+      const hash1 = await writeContractAsync({
         abi: LEAGUE_ABI,
         address: league,
         functionName: 'setDraftSettings',
@@ -303,16 +376,32 @@ export default function DraftSettings() {
           draftPickTradingEnabled,
         ],
       });
+      await publicClient.waitForTransactionReceipt({ hash: hash1 });
 
-      await publicClient.waitForTransactionReceipt({ hash });
-      toast.success('Draft settings confirmed on-chain.', { id });
+      // 2) NEW — authoritative chip settings
+      const tppSec = pickPresetToSeconds(timePerPick);
+      const poolU8 = playerPoolToUint(playerPool);
+      const cap = Math.max(0, Number.parseInt(salaryCap || '400')) || 400;
+
+      const hash2 = await writeContractAsync({
+        abi: LEAGUE_ABI,
+        address: league,
+        functionName: 'setDraftExtras',
+        args: [ tppSec, thirdRoundReversal, cap, poolU8 ],
+      });
+      await publicClient.waitForTransactionReceipt({ hash: hash2 });
+
+      // Mirror to local for quick UX; chain is authoritative
+      saveUI(league, { salaryCap, thirdRoundReversal, playerPool, timePerPick });
+
+      toast.success('Draft settings saved on-chain.', { id });
       router.refresh();
     } catch (e: any) {
       toast.error(e?.shortMessage || e?.message || 'Failed to save settings');
     }
   };
 
-  // EARLY RETURN when locked
+  // EARLY RETURN when locked or checking
   if (!commish || !wallet) {
     return (
       <main className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white px-6 py-10">
@@ -343,19 +432,6 @@ export default function DraftSettings() {
     );
   }
 
-  const nameForAddress = (addr: `0x${string}`, idx: number) => {
-    if (addr === ZERO) return `Team ${idx + 1}`;
-    const t = filledTeams.find(t => t.owner.toLowerCase() === addr.toLowerCase());
-    return t?.name || shortAddr(addr);
-  };
-  const avatarForAddress = (addr: `0x${string}`) => generatedLogoFor?.(addr) || '';
-
-  const chipClass = (selected: boolean) =>
-    selected ? 'rounded-xl px-4 py-2 font-semibold border'
-             : 'rounded-xl px-4 py-2 font-semibold border bg-gray-800 border-gray-700 hover:border-white';
-  const chipStyle = (selected: boolean) =>
-    selected ? { background: EGGSHELL, color: '#000', borderColor: EGGSHELL } : { color: EGGSHELL };
-
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white px-6 py-10">
       <div className="mx-auto max-w-2xl">
@@ -366,7 +442,12 @@ export default function DraftSettings() {
             <h1 className="text-3xl font-extrabold text-center" style={{ color: ZIMA }}>Draft Settings</h1>
             <div className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5">
               <div className="relative h-6 w-6 overflow-hidden rounded-full bg-gray-800">
-                <Image src={generatedLogoFor?.(commish as `0x${string}`) || '/placeholder.png'} alt="" fill sizes="24px" />
+                <Image
+                  src={commish ? generatedLogoFor(commish as `0x${string}`) : '/placeholder.png'}
+                  alt=""
+                  fill
+                  sizes="24px"
+                />
               </div>
               <div className="leading-tight">
                 <div className="text-sm font-semibold">Commissioner</div>
@@ -384,7 +465,7 @@ export default function DraftSettings() {
               {(['snake','salary','autopick','offline'] as DraftTypeKey[]).map((key) => {
                 const selected = draftType === key;
                 return (
-                  <button key={key} onClick={() => setDraftType(key)} className={chipClass(selected)} style={chipStyle(selected)} title={DraftTypeDesc[key]}>
+                  <button key={key} onClick={() => setDraftType(key)} className={selected ? 'rounded-xl px-4 py-2 font-semibold border' : 'rounded-xl px-4 py-2 font-semibold border bg-gray-800 border-gray-700 hover:border-white'} style={selected ? { background: EGGSHELL, color: '#000', borderColor: EGGSHELL } : { color: EGGSHELL }} title={DraftTypeDesc[key]}>
                     {key === 'snake' ? 'Snake' : key === 'salary' ? 'Salary Cap' : key === 'autopick' ? 'Autopick' : 'Offline'}
                   </button>
                 );
@@ -444,7 +525,8 @@ export default function DraftSettings() {
                   const selected = playerPool === (opt.key as PlayerPool);
                   return (
                     <button key={opt.key} onClick={()=>setPlayerPool(opt.key as PlayerPool)}
-                      className={chipClass(selected)} style={chipStyle(selected)}>{opt.label}</button>
+                      className={selected ? 'rounded-xl px-4 py-2 font-semibold border' : 'rounded-xl px-4 py-2 font-semibold border bg-gray-800 border-gray-700 hover:border-white'}
+                      style={selected ? { background: EGGSHELL, color: '#000', borderColor: EGGSHELL } : { color: EGGSHELL }}>{opt.label}</button>
                   );
                 })}
               </div>

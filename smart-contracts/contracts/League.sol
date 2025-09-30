@@ -8,23 +8,31 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /**
- * League (v2, unified settings + roster settings)
+ * League (v2 + DraftExtras) — Clone-friendly (EIP-1167)
  *
- * - The creator is ALWAYS the commissioner.
- * - teamCap is mutable via setLeagueSettings.
+ * Changes for clones:
+ * - Replaced constructor with initialize(...).
+ * - Removed `immutable` from buyInToken/buyInAmount.
+ * - Added `initializer` guard.
+ *
+ * Other behavior unchanged:
+ * - The creator (commissioner) gets an initial team ("Commissioner").
+ * - teamCap is mutable via setLeagueSettings with bounds.
  * - Buy-in escrow supports native (AVAX) or ERC20.
+ * - On-chain DraftExtras so all clients see the same chips/timers/order.
  */
 contract League is ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ---------- Core ----------
     address public commissioner;
-    uint256 public immutable createdAt;
+    uint256 public createdAt;
     string public name;
 
     // address(0) = native token (AVAX on Avalanche)
-    address public immutable buyInToken;
-    uint256 public immutable buyInAmount;
+    // NOTE: no longer immutable so clones can set these in initialize()
+    address public buyInToken;
+    uint256 public buyInAmount;
 
     // Mutable with bounds checks
     uint256 public teamCap;
@@ -102,9 +110,24 @@ contract League is ReentrancyGuard {
     address[] public manualDraftOrder;
     bool public draftPickTradingEnabled;
 
-    mapping(address => bool) private _seen; // temp map used in setDraftSettings
+    // ---------- DRAFT EXTRAS (NEW; used by UI chips & timers) ----------
+    enum PlayerPool {
+        All,
+        Rookies,
+        Vets
+    }
 
-    // ---------- UNIFIED LEAGUE SETTINGS (NEW) ----------
+    struct DraftExtras {
+        uint32 timePerPickSeconds; // 0 = no limit
+        bool thirdRoundReversal; // Round 3 follows Round 2 when true
+        uint32 salaryCapBudget; // e.g. 400
+        uint8 playerPool; // PlayerPool as uint8
+    }
+
+    DraftExtras public draftExtras;
+    event DraftExtrasUpdated(DraftExtras extras);
+
+    // ---------- UNIFIED LEAGUE SETTINGS ----------
     enum WaiverType {
         Rolling,
         Reverse,
@@ -141,7 +164,7 @@ contract League is ReentrancyGuard {
 
     LeagueSettings private _settingsV2;
 
-    // ---------- ROSTER SETTINGS (ADDED) ----------
+    // ---------- ROSTER SETTINGS ----------
     struct RosterSettings {
         uint8 qb;
         uint8 rb;
@@ -161,7 +184,7 @@ contract League is ReentrancyGuard {
         uint8 ir;
     }
 
-    RosterSettings private _roster; // single league-wide config
+    RosterSettings private _roster;
 
     // ---------- Events ----------
     event TeamCreated(
@@ -191,7 +214,7 @@ contract League is ReentrancyGuard {
         uint64 updatedAt
     );
     event LeagueSettingsUpdated(LeagueSettings s);
-    event RosterSettingsUpdated(RosterSettings s); // NEW
+    event RosterSettingsUpdated(RosterSettings s);
 
     // ---------- Modifiers ----------
     modifier onlyCommissioner() {
@@ -199,14 +222,22 @@ contract League is ReentrancyGuard {
         _;
     }
 
-    // ---------- Constructor ----------
-    constructor(
+    // ---------- Initializer guard (for clones) ----------
+    bool private _initialized;
+    modifier initializer() {
+        require(!_initialized, "Already initialized");
+        _;
+        _initialized = true;
+    }
+
+    // ---------- INITIALIZER (replaces constructor) ----------
+    function initialize(
         address _commissioner,
         string memory _name,
         address _buyInToken,
         uint256 _buyInAmount,
         uint256 _teamCount
-    ) {
+    ) external initializer {
         require(_commissioner != address(0), "Bad commissioner");
         require(bytes(_name).length > 0, "Name required");
         require(_teamCount > 0 && _teamCount <= 255, "Team count 1..255");
@@ -242,6 +273,14 @@ contract League is ReentrancyGuard {
             draftCompleted: false
         });
         draftPickTradingEnabled = false;
+
+        // Draft extras defaults (authoritative for UI chips)
+        draftExtras = DraftExtras({
+            timePerPickSeconds: 60, // "60s"
+            thirdRoundReversal: false,
+            salaryCapBudget: 400,
+            playerPool: uint8(PlayerPool.All)
+        });
 
         // Unified settings defaults
         _settingsV2 = LeagueSettings({
@@ -475,8 +514,8 @@ contract League is ReentrancyGuard {
         string calldata newLogoURI
     ) external {
         require(teams[msg.sender].owner != address(0), "Not a member");
-        TeamProfile storage p = _profiles[msg.sender];
 
+        TeamProfile storage p = _profiles[msg.sender];
         if (bytes(newName).length > 0) {
             string memory old = teams[msg.sender].name;
             teams[msg.sender].name = newName;
@@ -605,6 +644,7 @@ contract League is ReentrancyGuard {
     ) external onlyCommissioner {
         if (_orderMode == OrderMode.Manual) {
             delete manualDraftOrder;
+
             for (uint256 i = 0; i < _manualOrder.length; i++) {
                 address a = _manualOrder[i];
                 if (a == address(0)) continue;
@@ -613,6 +653,7 @@ contract League is ReentrancyGuard {
                 _seen[a] = true;
                 manualDraftOrder.push(a);
             }
+            // cleanup: reset the seen map
             for (uint256 j = 0; j < manualDraftOrder.length; j++) {
                 delete _seen[manualDraftOrder[j]];
             }
@@ -648,6 +689,30 @@ contract League is ReentrancyGuard {
             manualDraftOrder,
             draftPickTradingEnabled
         );
+    }
+
+    // ---------- Draft extras (NEW) ----------
+    function setDraftExtras(
+        uint32 _timePerPickSeconds, // 0 = no limit
+        bool _thirdRoundReversal,
+        uint32 _salaryCapBudget,
+        uint8 _playerPool // 0=All,1=Rookies,2=Vets
+    ) external onlyCommissioner {
+        require(_playerPool <= uint8(PlayerPool.Vets), "Bad playerPool");
+        require(_timePerPickSeconds <= 86400, "tpp too large"); // 24h safety
+
+        draftExtras = DraftExtras({
+            timePerPickSeconds: _timePerPickSeconds,
+            thirdRoundReversal: _thirdRoundReversal,
+            salaryCapBudget: _salaryCapBudget,
+            playerPool: _playerPool
+        });
+
+        emit DraftExtrasUpdated(draftExtras);
+    }
+
+    function getDraftExtras() external view returns (DraftExtras memory) {
+        return draftExtras;
     }
 
     /// Convenience summary (unchanged)
@@ -735,7 +800,7 @@ contract League is ReentrancyGuard {
         emit LeagueSettingsUpdated(_settingsV2);
     }
 
-    // ---------- Roster settings API (NEW) ----------
+    // ---------- Roster settings API ----------
     function getRosterSettings()
         external
         view
@@ -766,6 +831,9 @@ contract League is ReentrancyGuard {
         _roster = s;
         emit RosterSettingsUpdated(_roster);
     }
+
+    // ---------- Internal temp map for manual order duplicate checks ----------
+    mapping(address => bool) private _seen;
 
     receive() external payable {}
 }
