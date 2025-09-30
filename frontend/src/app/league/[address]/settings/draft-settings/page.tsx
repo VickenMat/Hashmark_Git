@@ -1,4 +1,3 @@
-// src/app/league/[address]/settings/draft-settings/page.tsx
 'use client';
 
 import Image from 'next/image';
@@ -160,6 +159,13 @@ export default function DraftSettings() {
   const [currentType, currentTs, currentOrderMode, currentCompleted, currentManualOrder, currentPickTrading] =
     (settings as [number, bigint, number, boolean, string[], boolean] | undefined) || [0, 0n, 0, false, [], false];
 
+  /* ---------------- LOCK: within 1h to start OR live ---------------- */
+  const nowSec = Math.floor(Date.now()/1000);
+  const startAt = Number(currentTs || 0n);
+  const withinHour = startAt > 0 && nowSec >= (startAt - 3600) && !currentCompleted;
+  const live = startAt > 0 && nowSec >= startAt && !currentCompleted;
+  const settingsLocked = withinHour || live;
+
   /* header look only */
   useTeamProfile?.(league as string, wallet as string);
 
@@ -192,7 +198,7 @@ export default function DraftSettings() {
     setTimePerPick(ui.timePerPick);
   }, [league]);
 
-  // persist UI whenever these change (so they stick even if navigation is fast)
+  // persist UI whenever these change
   useEffect(() => {
     if (!league) return;
     saveUI(league, { salaryCap, thirdRoundReversal, playerPool, timePerPick });
@@ -228,7 +234,7 @@ export default function DraftSettings() {
     });
   }, [orderMode, teams.length]);
 
-  // randomize when joined owners change
+  // randomize when joined owners change (only in Random mode)
   const ownersSig = useMemo(() => filledTeams.map(t=>t.owner.toLowerCase()).join(','), [filledTeams]);
   useEffect(() => {
     if (orderMode !== 'random') return;
@@ -239,7 +245,7 @@ export default function DraftSettings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ownersSig, orderMode, teams.length]);
 
-  // build array to send
+  // build array to send (full length, padded with ZERO)
   const manualOrderArray = useMemo(() => {
     const out = new Array<string>(teams.length).fill(ZERO);
     for (let i=0; i<Math.min(orderList.length, out.length); i++) out[i] = orderList[i] || ZERO;
@@ -275,12 +281,12 @@ export default function DraftSettings() {
     return true;
   };
 
-  // WAIT for tx mined, then navigate/refresh
+  // SAVE — send manual order *only when* in Manual mode (prevents “sticky” arrays)
   const handleSave = async () => {
     try {
       if (!validateBeforeSave()) return;
 
-      // Persist UI right before write (belt & suspenders)
+      // Persist UI right before write
       saveUI(league, { salaryCap, thirdRoundReversal, playerPool, timePerPick });
 
       const id = toast.loading('Submitting transaction…');
@@ -292,7 +298,7 @@ export default function DraftSettings() {
           DraftTypeMap[draftType],
           BigInt(draftTimestamp),
           OrderModeMap[orderMode],
-          manualOrderArray,
+          orderMode === 'manual' ? manualOrderArray : ([] as `0x${string}`[]),
           draftCompleted,
           draftPickTradingEnabled,
         ],
@@ -300,12 +306,13 @@ export default function DraftSettings() {
 
       await publicClient.waitForTransactionReceipt({ hash });
       toast.success('Draft settings confirmed on-chain.', { id });
-      router.refresh(); // ensure fresh reads if you stay on the page
+      router.refresh();
     } catch (e: any) {
       toast.error(e?.shortMessage || e?.message || 'Failed to save settings');
     }
   };
 
+  // EARLY RETURN when locked
   if (!commish || !wallet) {
     return (
       <main className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white px-6 py-10">
@@ -314,6 +321,27 @@ export default function DraftSettings() {
     );
   }
   if (!isCommish) return null;
+
+  if (settingsLocked) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white px-6 py-10">
+        <div className="mx-auto max-w-xl text-center rounded-2xl border border-white/10 bg-white/[0.04] p-6">
+          <div className="text-2xl font-bold mb-2" style={{ color: ZIMA }}>Draft Settings Locked</div>
+          <p className="text-sm text-gray-300">
+            Settings are locked within 1 hour of the scheduled start and during the live draft.
+          </p>
+          <div className="mt-4">
+            <Link
+              href={`/league/${league}`}
+              className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 inline-block hover:bg-white/15"
+            >
+              Go to Draft Room
+            </Link>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   const nameForAddress = (addr: `0x${string}`, idx: number) => {
     if (addr === ZERO) return `Team ${idx + 1}`;
@@ -328,24 +356,10 @@ export default function DraftSettings() {
   const chipStyle = (selected: boolean) =>
     selected ? { background: EGGSHELL, color: '#000', borderColor: EGGSHELL } : { color: EGGSHELL };
 
-  const pickLabel = (p: typeof PICK_PRESETS[number]) => {
-    if (p === 'no-limit') return 'No Limit';
-    if (p.endsWith('s')) {
-      const n = parseInt(p);
-      if (n === 120) return '2M';
-      if (n === 180) return '3M';
-      if (n === 300) return '5M';
-      if (n === 600) return '10M';
-      return `${n}S`;
-    }
-    if (p.endsWith('h')) return `${parseInt(p)}H`;
-    return p.toUpperCase();
-  };
-
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white px-6 py-10">
       <div className="mx-auto max-w-2xl">
-        {/* Header like your screenshot: centered title + Commissioner pill */}
+        {/* Header */}
         <header className="mb-6">
           <div className="flex items-center justify-between">
             <div className="w-14" />
@@ -446,7 +460,7 @@ export default function DraftSettings() {
                       className={selected ? 'rounded-xl px-3 py-1.5 text-sm font-semibold border'
                                            : 'rounded-xl px-3 py-1.5 text-sm font-semibold border bg-gray-800 border-gray-700 hover:border-white'}
                       style={selected ? { background: EGGSHELL, color: '#000', borderColor: EGGSHELL } : { color: EGGSHELL }}>
-                      {pickLabel(p)}
+                      {p === 'no-limit' ? 'No Limit' : p.endsWith('s') ? `${parseInt(p)}S` : `${parseInt(p)}H`}
                     </button>
                   );
                 })}
@@ -511,8 +525,12 @@ export default function DraftSettings() {
           </div>
 
           <div className="flex justify-center">
-            <button onClick={handleSave} disabled={isPending} className="rounded-xl bg-fuchsia-600 hover:bg-fuchsia-700 px-6 py-3 font-bold disabled:opacity-50">
-              {isPending ? 'Saving…' : 'Save Settings'}
+            <button
+              onClick={handleSave}
+              disabled={isPending || settingsLocked}
+              className="rounded-xl bg-fuchsia-600 hover:bg-fuchsia-700 px-6 py-3 font-bold disabled:opacity-50"
+            >
+              {settingsLocked ? 'Locked' : (isPending ? 'Saving…' : 'Save Settings')}
             </button>
           </div>
         </div>

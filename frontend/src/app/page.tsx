@@ -790,10 +790,18 @@ function LeagueCard({
       })
     : '';
 
-  // Link target + hover tint
-  const preDraftHref = `/league/${l.addr}/settings/draft-settings`;
-  const liveHref = `/league/${l.addr}/draft`;
-  const tileHref = !l.draftCompleted && l.draftTs > 0 ? (isDraftingNow ? liveHref : preDraftHref) : undefined;
+// Link target + hover tint
+const preDraftHref = `/league/${l.addr}/settings/draft-settings`;
+const liveHref = `/league/${l.addr}/draft`;
+
+// New rule: if the draft is within 1 hour or already live, the tile opens the Draft Room
+const withinHour = !l.draftCompleted && l.draftTs > 0 && now >= (l.draftTs - 3600);
+
+const tileHref =
+  !l.draftCompleted && l.draftTs > 0
+    ? (isDraftingNow || withinHour ? liveHref : preDraftHref)
+    : undefined;
+
 
   const TileWrap: React.FC<{ children: React.ReactNode }> = ({ children }) =>
     tileHref ? (
