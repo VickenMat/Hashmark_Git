@@ -18,15 +18,18 @@ import { useTeamProfile } from '@/lib/teamProfile';
 import CurrentMatchupCard from '@/components/CurrentMatchupCard';
 import { activeWeekKey } from '@/lib/matchups';
 
+import { loadUISettings, buildRoundOrder } from '@/lib/draft-helpers';
+import { loadDraftState } from '@/lib/draft-storage';
+
 type Address = `0x${string}`;
 const ZERO: Address = '0x0000000000000000000000000000000000000000';
 
-/* ------------------- Theme constants ------------------- */
+/* ------------------- Theme ------------------- */
 const ZIMA = '#37c0f6';
 const EGGSHELL = '#F0EAD6';
 const ORANGE = '#FFA500';
 
-/* ------------------- ABIs ------------------- */
+/* ------------------- ABI ------------------- */
 const LEAGUE_ABI = [
   { type: 'function', name: 'name', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
   { type: 'function', name: 'buyInAmount', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
@@ -73,6 +76,7 @@ const toTeamArr = (v: unknown): TeamTuple[] => (Array.isArray(v) ? (v as TeamTup
 type LeagueCardData = {
   addr: Address; name?: string; buyIn?: bigint; buyInToken?: Address; createdAt?: number;
   filled: number; cap: number; draftCompleted: boolean; draftTs: number; draftOrder: Address[];
+  teams: TeamTuple[];
   homeName: string; awayName: string; homeOwner?: Address; awayOwner?: Address;
   homeScore: number; awayScore: number; homeProj: number; awayProj: number; record: string;
   isArchived: boolean; isMember: boolean; owed?: bigint; isCommissioner: boolean;
@@ -81,10 +85,10 @@ type LeagueCardData = {
 
 /* ------------------- Reorder modal ------------------- */
 function ReorderModal({
-  open, onClose, leagues, order, setOrder, walletKey, onSaved,
+  open, onClose, leagues, order, setOrder, walletKey, teamNameByAddr, onSaved,
 }: {
   open: boolean; onClose: () => void; leagues: LeagueCardData[]; order: string[];
-  setOrder: (next: string[]) => void; walletKey: string; onSaved: () => void;
+  setOrder: (next: string[]) => void; walletKey: string; teamNameByAddr: Record<string, string>; onSaved: () => void;
 }) {
   const [list, setList] = useState<string[]>([]);
   useEffect(() => {
@@ -105,7 +109,7 @@ function ReorderModal({
   const save = () => { setOrder(list); writeLS(walletKey, list); onClose(); onSaved(); };
   if (!open) return null;
 
-  const nameByAddr = new Map(leagues.map(l => [l.addr, l.name ?? 'League']));
+  const leagueNameByAddr = new Map(leagues.map(l => [l.addr, l.name ?? 'League']));
 
   return (
     <div className="fixed inset-0 z-[100]">
@@ -130,8 +134,10 @@ function ReorderModal({
               >
                 <div className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-white/10 text-sm" style={{ color: EGGSHELL }}>≡</div>
                 <div className="truncate text-sm" style={{ color: EGGSHELL }}>
-                  <span className="font-medium">{nameByAddr.get(addr) ?? 'League'}</span>
-                  <span className="opacity-70"> · {short(addr)}</span>
+                  <span className="font-medium">
+                    {leagueNameByAddr.get(addr) ?? 'League'}
+                  </span>
+                  <span className="opacity-70"> · {teamNameByAddr[addr] || 'My Team'}</span>
                 </div>
               </div>
             ))
@@ -172,7 +178,6 @@ export default function Home() {
   const [hadEver, setHadEver] = useState<boolean>(() => readLS<boolean>(HAD_EVER_KEY, false));
   const [order, setOrder] = useState<string[]>(() => readLS<string[]>(ORDER_KEY, []));
 
-  // Refresh LS-based toggles when wallet changes
   useEffect(() => {
     setArchived(readLS<string[]>(ARCHIVE_KEY, []));
     setArchivedOnly(readLS<boolean>(ARCHIVE_ONLY_KEY, false));
@@ -223,7 +228,7 @@ export default function Home() {
     })();
   }, [publicClient, factory, chainId]);
 
-  /* ------------------- Factory reads (hardened) ------------------- */
+  /* ------------------- Factory reads ------------------- */
   const leaguesRes = useReadContract({
     abi: LEAGUE_FACTORY_ABI,
     address: factory,
@@ -238,7 +243,6 @@ export default function Home() {
     },
   });
 
-  // Source of truth: the factory list
   const leagueAddrs = useMemo<Address[]>(() => {
     const a = leaguesRes.data as unknown;
     const arr = Array.isArray(a) && a.every((x) => typeof x === 'string' && x.startsWith('0x'))
@@ -279,12 +283,9 @@ export default function Home() {
     },
   });
 
-  // also refetch on visibility changes (helpful after RPC change)
+  // refetch on visibility
   useEffect(() => {
-    const onVis = () => {
-      leaguesRes.refetch?.();
-      metaRes.refetch?.();
-    };
+    const onVis = () => { leaguesRes.refetch?.(); metaRes.refetch?.(); };
     document.addEventListener('visibilitychange', onVis);
     return () => document.removeEventListener('visibilitychange', onVis);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -332,7 +333,7 @@ export default function Home() {
       const arr = Array.isArray(teams) ? teams : [];
       let n = 0;
       arr.forEach(() => { const r = teamPaidRes.data?.[k++]; if ((r?.result as boolean | undefined) === true) n++; });
-      counts[addr] = n;
+      counts[addressToKey(addr)] = n;
     });
     return counts;
   }, [teamsByLeague, teamPaidRes.data]);
@@ -374,11 +375,12 @@ export default function Home() {
 
       arr.push({
         addr: address, name, buyIn, buyInToken, createdAt, filled, cap, draftCompleted, draftTs, draftOrder,
+        teams,
         homeName: n0, awayName: n1, homeOwner: team0?.owner, awayOwner: team1?.owner,
         homeScore: 0, awayScore: 0, homeProj: 0, awayProj: 0, record: '0–0',
         isArchived: archived.includes(address), isMember, owed,
         isCommissioner: !!(lowerWallet && commish && lowerWallet === commish.toLowerCase()),
-        passwordRequired, escrowNative, escrowToken, paidCount: teamPaidCounts[address] ?? 0,
+        passwordRequired, escrowNative, escrowToken, paidCount: teamPaidCounts[addressToKey(address)] ?? 0,
       });
     });
     return arr;
@@ -406,7 +408,7 @@ export default function Home() {
   const archive = (addr: string) => { setArchived((prev) => (prev.includes(addr) ? prev : [...prev, addr])); setHadEver(true); };
   const restore = (addr: string) => setArchived((prev) => prev.filter((x) => x !== addr));
 
-  // Carousel + highlight computation (lg breakpoint)
+  // Carousel setup
   const railRef = useRef<HTMLDivElement>(null);
   const [isLg, setIsLg] = useState(false);
   const [activeRange, setActiveRange] = useState<[number, number]>([0, 0]);
@@ -446,6 +448,16 @@ export default function Home() {
   const onRailScroll = () => recomputeActive();
   const jumpToIndex = (idx: number) => scrollToPage(Math.floor(idx / perPage));
 
+  // Build map of "your team name" for modal pills
+  const myTeamNameByAddr = useMemo<Record<string, string>>(() => {
+    const out: Record<string, string> = {};
+    filtered.forEach((l) => {
+      const mine = wallet ? l.teams.find(t => t.owner.toLowerCase() === wallet.toLowerCase()) : undefined;
+      out[addressToKey(l.addr)] = mine?.name || 'My Team';
+    });
+    return out;
+  }, [filtered, wallet]);
+
   const isFuji = chainId === 43113;
 
   return (
@@ -468,7 +480,7 @@ export default function Home() {
         </div>
       )}
 
-      {/* Blobs */}
+      {/* Decorative blobs */}
       <div className="pointer-events-none absolute -top-24 -left-16 -z-10 h-72 w-72 rounded-full bg-fuchsia-500/10 blur-3xl dark:bg-fuchsia-500/20" />
       <div className="pointer-events-none absolute top-10 right-0 -z-10 h-80 w-80 rounded-full bg-purple-500/10 blur-3xl dark:bg-purple-500/20" />
 
@@ -479,13 +491,13 @@ export default function Home() {
           <p className="mt-1 text-sm" style={{ color: EGGSHELL }}>The largest fantasy football platform on the blockchain.</p>
         </div>
 
-        {/* ===== Create / Join ===== */}
+        {/* Create / Join */}
         <div className="mb-2.5 mt-6 flex flex-wrap items-center justify-center gap-4">
           <CTA href="/create-league" intent="create">Create League</CTA>
           <CTA href="/join-league" intent="join">Join League</CTA>
         </div>
 
-        {/* ===== Controls row ===== */}
+        {/* Controls row */}
         <div className="mb-4 flex flex-wrap items-center justify-center gap-3" style={{ color: EGGSHELL }}>
           {filtered.length > 0 && (
             <div className="inline-flex max-w-full overflow-x-auto rounded-2xl border border-white/15 bg-white/5 p-1 shadow-sm">
@@ -526,14 +538,14 @@ export default function Home() {
           {showPills && (
             <div className="inline-flex rounded-full border border-white/15 bg-white/5 p-1 shadow-sm">
               <button
-                onClick={() => { setArchivedOnly(false); setTimeout(() => {}, 0); }}
+                onClick={() => { setArchivedOnly(false); }}
                 className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${!archivedOnly ? 'bg-white/10' : ''}`}
                 style={{ color: EGGSHELL }}
               >
                 Active
               </button>
               <button
-                onClick={() => { setArchivedOnly(true); setTimeout(() => {}, 0); }}
+                onClick={() => { setArchivedOnly(true); }}
                 className={`rounded-full px-3 py-1.5 text-sm font-semibold transition ${archivedOnly ? 'bg-white/10' : ''}`}
                 style={{ color: EGGSHELL }}
               >
@@ -543,7 +555,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* ===== League dashboard ===== */}
+        {/* Dashboard */}
         <div style={{ color: EGGSHELL }}>
           {filtered.length > 0 ? (
             filtered.length === 1 ? (
@@ -581,6 +593,8 @@ export default function Home() {
                     ))}
                   </div>
                 </div>
+
+                {/* arrows restored */}
                 {filtered.length > (isLg ? 2 : 1) && (
                   <>
                     <button
@@ -624,7 +638,7 @@ export default function Home() {
           )}
         </div>
 
-        {/* ===== Info boxes ===== */}
+        {/* Info boxes (bottom) */}
         <section className="mt-8">
           <h2 className="mb-5 text-center text-lg font-bold tracking-tight" style={{ color: ZIMA }}>
             Learn more about Hashmark & Avalanche
@@ -673,37 +687,30 @@ export default function Home() {
         order={order}
         setOrder={setOrder}
         walletKey={ORDER_KEY}
+        teamNameByAddr={myTeamNameByAddr}
         onSaved={() => {
           const el = railRef.current;
           if (el) el.scrollTo({ left: 0 });
-          setTimeout(() => {
-            if (el) setActiveRange([0, (isLg ? 2 : 1) - 1]);
-          }, 0);
+          setTimeout(() => { if (el) setActiveRange([0, (isLg ? 2 : 1) - 1]); }, 0);
         }}
       />
     </main>
   );
 }
 
+function addressToKey(a: Address) { return a.toLowerCase(); }
+
 /* ---------- CTA helper ---------- */
 function CTA({ href, intent, children }: { href: string; intent: 'create' | 'join'; children: React.ReactNode }) {
   if (intent === 'create') {
     return (
-      <Link
-        href={href}
-        className="rounded-xl px-6 py-3 font-bold text-white shadow"
-        style={{ backgroundColor: ZIMA }}
-      >
+      <Link href={href} className="rounded-xl px-6 py-3 font-bold text-white shadow" style={{ backgroundColor: ZIMA }}>
         {children}
       </Link>
     );
   }
   return (
-    <Link
-      href={href}
-      className="rounded-xl px-6 py-3 font-bold shadow ring-1"
-      style={{ backgroundColor: EGGSHELL, color: '#0b0b14', borderColor: 'rgba(255,255,255,.18)' }}
-    >
+    <Link href={href} className="rounded-xl px-6 py-3 font-bold shadow ring-1" style={{ backgroundColor: EGGSHELL, color: '#0b0b14', borderColor: 'rgba(255,255,255,.18)' }}>
       {children}
     </Link>
   );
@@ -745,6 +752,53 @@ function LeagueCard({
     : undefined;
 
   const boxClass = 'rounded-2xl border border-white/10 bg-white/[0.03] p-4 min-h-[185px]';
+
+  // Draft awareness
+  const ui = loadUISettings(l.addr);
+  const round1 = useMemo(() => {
+    if (l.draftOrder && l.draftOrder.length) {
+      const base = [...l.draftOrder];
+      while (base.length < l.cap) base.push(ZERO);
+      return base as Address[];
+    }
+    const owners = l.teams.map(t => t.owner);
+    while (owners.length < l.cap) owners.push(ZERO);
+    return owners as Address[];
+  }, [l.draftOrder, l.teams, l.cap]);
+
+  const [currentTeamLabel, currentOverall] = useMemo(() => {
+    const state = loadDraftState(l.addr);
+    if (!state || state.ended) return [undefined, undefined] as const;
+    const teamCap = l.cap || round1.length;
+    const order = buildRoundOrder(round1 as any, state.currentRound, ui.thirdRoundReversal);
+    const owner = order[state.currentPickIndex] as Address | undefined;
+    const idx = (state.currentRound - 1) * teamCap + (state.currentPickIndex + 1);
+    const label = !owner || owner === ZERO
+      ? `Team ${state.currentPickIndex + 1}`
+      : (l.teams.find(tt => tt.owner.toLowerCase() === owner.toLowerCase())?.name
+          || `${owner.slice(0,6)}…${owner.slice(-4)}`);
+    return [label, idx] as const;
+  }, [l.addr, l.cap, l.teams, round1, ui.thirdRoundReversal]);
+
+  const isDraftingNow = !l.draftCompleted && l.draftTs > 0 && now >= l.draftTs;
+
+  // format date with weekday + tz
+  const dateLabel = draftDate
+    ? draftDate.toLocaleString([], {
+        weekday: 'short', year: 'numeric', month: 'numeric', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+      })
+    : '';
+
+  // Link target + hover tint
+  const preDraftHref = `/league/${l.addr}/settings/draft-settings`;
+  const liveHref = `/league/${l.addr}/draft`;
+  const tileHref = !l.draftCompleted && l.draftTs > 0 ? (isDraftingNow ? liveHref : preDraftHref) : undefined;
+
+  const TileWrap: React.FC<{ children: React.ReactNode }> = ({ children }) =>
+    tileHref ? (
+      <Link href={tileHref} className="block rounded-2xl transition hover:bg-white/[0.05]">{children}</Link>
+    ) : <>{children}</>;
 
   return (
     <div className="h-[490px] rounded-2xl border p-4" style={{ borderColor: EGGSHELL }}>
@@ -790,14 +844,12 @@ function LeagueCard({
           {l.escrowNative !== undefined && <span className="rounded-full border border-white/15 bg-white/5 px-2 py-1" style={{ color: EGGSHELL }}>Escrow: {formatAvax(l.escrowNative)}</span>}
         </div>
 
-        {/* Progress bars */}
+        {/* Progress bars (Payments + Teams) */}
         <div className="mx-auto mb-5 flex w-full max-w-md gap-4">
           <div className="flex-1">
             <div className="mb-1 flex items-center justify-between text-[12px] font-semibold" style={{ color: EGGSHELL }}>
               <span>Payments</span>
-              <span className="font-bold">
-                {isFreeLeague ? 'Free' : `${paidProgress}/${l.filled} (${progressPct}%)`}
-              </span>
+              <span className="font-bold">{isFreeLeague ? 'Free' : `${paidProgress}/${l.filled} (${progressPct}%)`}</span>
             </div>
             <div className="h-2 w-full rounded-full bg-white/10">
               <div className={`h-2 rounded-full bg-gradient-to-r ${paymentBarClass}`} style={{ width: `${isFreeLeague ? 100 : progressPct}%` }} />
@@ -814,74 +866,91 @@ function LeagueCard({
           </div>
         </div>
 
-{/* Draft / Matchup */}
-<div className="mt-1">
-  {!l.draftCompleted ? (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 min-h-[185px]">
-      <div className="mb-0 text-center text-[11px] uppercase tracking-[0.2em]" style={{ color: ZIMA }}>
-        Draft
-      </div>
-
-      {l.draftTs > 0 ? (
-        <>
-          {/* Date & time */}
-          <div className="mt-0 text-center text-lg font-extrabold" style={{ color: EGGSHELL }}>
-            {new Date(l.draftTs * 1000).toLocaleDateString()} •{' '}
-            {new Date(l.draftTs * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-          </div>
-
-          {/* My pick */}
-          <div className="mt-0 text-center text-sm" style={{ color: EGGSHELL }}>
-            {myPick ? `Pick ${myPick}` : 'Pick not set'}
-          </div>
-
-          {/* Countdown (restored) */}
-          {l.draftTs > now ? (
-            <div className="mt-2 grid grid-cols-4 gap-2">
-              {([
-                ['Days', t.d],
-                ['Hrs',  t.h],
-                ['Min',  t.m],
-                ['Sec',  t.sec],
-              ] as const).map(([label, val]) => (
-                <div key={label} className="rounded-xl bg-white/10 px-3 py-1.75 text-center ring-1 ring-white/15">
-                  <div className="text-xl font-black tabular-nums" style={{ color: EGGSHELL }}>{val}</div>
-                  <div className="text-[10px]" style={{ color: EGGSHELL }}>{label}</div>
+        {/* Draft / Matchup */}
+        <div className="mt-1">
+          {!l.draftCompleted ? (
+            <TileWrap>
+              <div className={boxClass}>
+                <div className="mb-0 text-center text-[11px] uppercase tracking-[0.2em]" style={{ color: ZIMA }}>
+                  Draft
                 </div>
-              ))}
-            </div>
+
+                {l.draftTs > 0 ? (
+                  <>
+                    {/* Date & time with weekday + tz */}
+                    <div className="mt-0 text-center text-lg font-extrabold" style={{ color: EGGSHELL }}>
+                      {dateLabel}
+                    </div>
+
+                    {/* My pick */}
+                    <div className="mt-0 text-center text-sm" style={{ color: EGGSHELL }}>
+                      {myPick ? `Your Pick: ${myPick}` : 'Pick not set'}
+                    </div>
+
+                    {/* Countdown / Drafting now */}
+                    {isDraftingNow ? (
+                      <div className="mt-3 text-center">
+                        <div className="text-red-400 font-extrabold text-lg">DRAFTING NOW</div>
+                        <div className="mt-1 text-sm" style={{ color: EGGSHELL }}>
+                          {currentOverall ? `Current Pick: #${currentOverall}` : 'Current Pick: —'}{` · `}
+                          {currentTeamLabel || '—'}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-2">
+                        <div className="grid grid-cols-4 gap-2">
+                          {([
+                            ['Days', t.d],
+                            ['Hrs',  t.h],
+                            ['Min',  t.m],
+                            ['Sec',  t.sec],
+                          ] as const).map(([label, val]) => (
+                            <div key={label} className="rounded-xl bg-white/10 px-3 py-1.75 text-center ring-1 ring-white/15">
+                              <div
+                                className="text-xl font-black tabular-nums"
+                                style={{ color: left <= 3600 ? '#f87171' : EGGSHELL }}
+                              >
+                                {val}
+                              </div>
+                              <div className="text-[10px]" style={{ color: EGGSHELL }}>{label}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {left <= 3600 && (
+                          <div className="mt-2 text-center text-sm font-extrabold text-red-400">
+                            DRAFT ROOM OPEN — Enter now →
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-center space-y-2" style={{ color: EGGSHELL }}>
+                    <div className="text-xl font-bold">Draft not scheduled</div>
+                    <div className="text-sm leading-relaxed">
+                      <p>
+                        Invite friends by sharing the <span className="font-semibold">League Address</span> and{' '}
+                        <span className="font-semibold">password</span> (if required).
+                      </p>
+                      <p>The <span className="font-semibold">Commissioner</span> can set the draft order anytime from Draft Settings.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </TileWrap>
           ) : (
-            <div className="mt-2 text-center font-semibold" style={{ color: EGGSHELL }}>
-              Draft window open
+            <div className={boxClass}>
+              <CurrentMatchupCard
+                key={`${l.addr}:${chainId}:${week}`}
+                league={l.addr}
+                owner={(walletAddr as Address) || ZERO}
+                week={week}
+                variant="team"
+              />
             </div>
           )}
-        </>
-      ) : (
-        <div className="text-center space-y-2" style={{ color: EGGSHELL }}>
-          <div className="text-xl font-bold">Draft not scheduled</div>
-          <div className="text-sm leading-relaxed">
-            <p>
-              Invite friends by sharing the <span className="font-semibold">League Address</span> and{' '}
-              <span className="font-semibold">password</span> (if required).
-            </p>
-            <p>The <span className="font-semibold">Commissioner</span> can set the draft order anytime from Draft Settings.</p>
-          </div>
         </div>
-      )}
-    </div>
-  ) : (
-    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 min-h-[185px]">
-      <CurrentMatchupCard
-        key={`${l.addr}:${chainId}:${week}`}   // keep this so it refetches on RPC/chain change
-        league={l.addr}
-        owner={(walletAddr as Address) || ZERO}
-        week={week}
-        variant="team"
-      />
-    </div>
-  )}
-</div>
-
 
         {/* Actions */}
         <div className="mt-5 flex gap-2">
@@ -892,29 +961,32 @@ function LeagueCard({
           >
             My Team
           </Link>
-          {l.draftCompleted ? (
-            <Link
-              href={`/league/${l.addr}`}
-              className="flex-1 rounded-xl bg-transparent px-3 py-2 text-center font-semibold"
-              style={{ border: `1px solid ${ZIMA}`, color: ZIMA }}
-            >
-              League
-            </Link>
-          ) : l.isCommissioner ? (
-            <Link
-              href={`/league/${l.addr}/settings/draft-settings`}
-              className="flex-1 rounded-xl bg-transparent px-3 py-2 text-center font-semibold"
-              style={{ border: `1px solid ${ZIMA}`, color: ZIMA }}
-            >
-              Draft Settings
-            </Link>
+
+          {!l.draftCompleted ? (
+            isDraftingNow ? (
+              <Link
+                href={`/league/${l.addr}/draft`}
+                className="flex-1 rounded-xl bg-transparent px-3 py-2 text-center font-semibold"
+                style={{ border: `1px solid ${ZIMA}`, color: ZIMA }}
+              >
+                Draft Room
+              </Link>
+            ) : (
+              <Link
+                href={`/league/${l.addr}/settings/draft-settings`}
+                className="flex-1 rounded-xl bg-transparent px-3 py-2 text-center font-semibold"
+                style={{ border: `1px solid ${ZIMA}`, color: ZIMA }}
+              >
+                Draft Settings
+              </Link>
+            )
           ) : (
             <Link
               href={`/league/${l.addr}`}
               className="flex-1 rounded-xl bg-transparent px-3 py-2 text-center font-semibold"
               style={{ border: `1px solid ${ZIMA}`, color: ZIMA }}
             >
-              Enter League
+              League
             </Link>
           )}
         </div>
