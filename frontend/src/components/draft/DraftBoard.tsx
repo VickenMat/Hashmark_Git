@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { buildRoundOrder, nextPickPointer } from '@/lib/draft-helpers';
 import { type DraftState } from '@/lib/draft-storage';
@@ -31,7 +32,7 @@ export default function DraftBoard(props: Props) {
     pickSeconds, draftDate, state, onState, onReset
   } = props;
 
-  // Build all round orders upfront
+  // All round orders
   const orders = useMemo(() => {
     const arr: (`0x${string}`[])[] = [];
     for (let r = 1; r <= totalRounds; r++) {
@@ -57,23 +58,47 @@ export default function DraftBoard(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [msUntil, started]);
 
-  // per-pick timer
-  const [tick, setTick] = useState<number>(0);
+  // per-pick timer (local clock)
+  const pickStartRef = useRef<number | null>(null);   // ms epoch when current pick clock started
+  const pickRemainRef = useRef<number>(pickSeconds);  // seconds remaining snapshot
+
+  // reset pick clock when pointer moves or duration changes
   useEffect(() => {
-    if (!started || state.paused || state.ended || pickSeconds === 0) return;
-    const id = setInterval(() => setTick((t) => t + 1), 1000);
-    return () => clearInterval(id);
-  }, [started, state.paused, state.ended, pickSeconds]);
+    if (!started || state.ended || pickSeconds === 0) {
+      pickStartRef.current = null;
+      pickRemainRef.current = pickSeconds;
+      return;
+    }
+    pickRemainRef.current = pickSeconds;
+    pickStartRef.current = state.paused ? null : Date.now();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [started, state.currentRound, state.currentPickIndex, pickSeconds]);
+
+  // pause/resume adjust the local clock
+  useEffect(() => {
+    if (pickSeconds === 0 || !started || state.ended) return;
+    if (state.paused) {
+      if (pickStartRef.current != null) {
+        const elapsed = Math.max(0, (Date.now() - pickStartRef.current) / 1000);
+        pickRemainRef.current = Math.max(0, pickSeconds - elapsed);
+      }
+      pickStartRef.current = null;
+    } else {
+      if (pickStartRef.current == null) {
+        pickStartRef.current = Date.now() - (pickSeconds - pickRemainRef.current) * 1000;
+      }
+    }
+  }, [state.paused, pickSeconds, started, state.ended]);
+
+  const secondsLeftOnPick = useMemo(() => {
+    if (!started || state.paused || state.ended || pickSeconds === 0) return 0;
+    if (!pickStartRef.current) return Math.ceil(pickRemainRef.current);
+    const elapsed = Math.max(0, (now - pickStartRef.current) / 1000);
+    return Math.max(0, Math.ceil(pickSeconds - elapsed));
+  }, [now, started, state.paused, state.ended, pickSeconds]);
 
   const { currentRound, currentPickIndex } = state;
   const currentOwner = orders[currentRound - 1]?.[currentPickIndex] as `0x${string}` | undefined;
-
-  const pickDeadline = useMemo(() => {
-    if (!started || state.paused || pickSeconds === 0) return 0;
-    // crude approach: deadline = startedAt + elapsed picks * pickSeconds
-    // For demo: recalc on each pick/round change by resetting startedAtPick
-    return 0;
-  }, [started, state.paused, pickSeconds]);
 
   // Pause/Resume (commissioner only)
   function pause() {
@@ -87,7 +112,7 @@ export default function DraftBoard(props: Props) {
     onState({ ...state, paused: false });
   }
 
-  // Make a pick (demo: stores only owner+playerName string)
+  // Make a pick (demo)
   function makePick(playerName: string) {
     if (!started || state.paused || state.ended) return;
     if (!currentOwner) return;
@@ -116,11 +141,6 @@ export default function DraftBoard(props: Props) {
     };
 
     onState(nextState);
-
-    if (nextState.ended) {
-      // TODO: trigger on-chain “draftCompleted” + roster assignment + league state = matchup
-      // For now we just mark ended in local state.
-    }
   }
 
   // Simple player quick-pick input (for demo)
@@ -138,18 +158,63 @@ export default function DraftBoard(props: Props) {
     return t?.name || `${addr.slice(0,6)}…${addr.slice(-4)}`;
   };
 
+  // Link to this page’s All Teams tab with focused team
+  const teamHref = (addr: `0x${string}`) =>
+    `/league/${league}/draft?tab=all&team=${addr}`;
+
+  const mmss = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${String(m)}:${String(sec).padStart(2, '0')}`;
+  };
+
+  const preDraftDanger = !started && msUntil <= 3 * 60 * 1000 && msUntil > 0;   // last 3 minutes (red)
+  const pickDanger = started && !state.paused && pickSeconds > 0 && secondsLeftOnPick <= 60; // last minute (red)
+
   return (
     <div className="rounded-2xl border border-gray-800 bg-black/30 p-4 sm:p-6">
-      {/* Top controls */}
+      {/* Top status (single line) */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm" style={{ color: EGGSHELL }}>
-          Draft Start:&nbsp;
-          {draftDate.toLocaleString()}&nbsp;·&nbsp;
-          {started
-            ? (state.paused ? <span className="text-yellow-300">Paused</span> : <span className="text-green-400">Live</span>)
-            : <Countdown ms={msUntil} />}
+        <div className="text-sm flex-1 min-w-0">
+          <span className="text-white/90 font-semibold">
+            {draftDate.toLocaleString()}
+          </span>
+          <span className="text-white/40 mx-2">•</span>
+
+          {/* Status: Live / Paused / Countdown */}
+          {started ? (
+            <span className={state.paused ? 'text-yellow-300' : 'text-green-400'}>
+              {state.paused ? 'Paused' : 'Live'}
+            </span>
+          ) : (
+            <span className={preDraftDanger ? 'text-red-400 font-semibold' : ''}>
+              <Countdown ms={msUntil} />
+            </span>
+          )}
+
+          <span className="text-white/40 mx-2">•</span>
+
+          {/* Pick clock */}
+          {pickSeconds > 0 ? (
+            <span className={pickDanger ? 'text-red-400 font-semibold' : 'text-white/80'}>
+              Pick clock: {mmss(secondsLeftOnPick || pickSeconds)}
+            </span>
+          ) : (
+            <span className="text-white/60">No pick clock</span>
+          )}
+
+          <span className="text-white/40 mx-2">•</span>
+
+          {/* Current pick summary */}
+          <span className="text-white/80">
+            Round {currentRound} Pick {currentPickIndex + 1}:{' '}
+            <span className="font-semibold" style={{ color: ZIMA }}>
+              {teamLabel(currentOwner || ZERO as any)}
+            </span>
+          </span>
         </div>
-        <div className="flex items-center gap-2">
+
+        <div className="flex items-center gap-2 shrink-0">
           {isCommish && started && !state.ended && (
             state.paused
               ? <button onClick={resume} className="rounded-lg bg-green-600 hover:bg-green-700 px-3 py-1.5 font-semibold">Resume</button>
@@ -159,17 +224,28 @@ export default function DraftBoard(props: Props) {
         </div>
       </div>
 
-      {/* Teams row */}
+      {/* Teams row (clickable → All Teams tab w/ focused team) */}
       <div className="mb-3 grid" style={{ gridTemplateColumns: `repeat(${teamCap}, minmax(120px, 1fr))`, gap: '8px' }}>
-        {orders[0]?.map((addr, i) => (
-          <div key={`team-${i}`} className="rounded-xl border border-white/10 bg-white/5 p-2 text-center">
-            <div className="text-xs text-gray-400 mb-1">Pos {i + 1}</div>
-            <div className="font-semibold">{teamLabel(addr)}</div>
-          </div>
-        ))}
+        {orders[0]?.map((addr, i) => {
+          const pill = (
+            <div className="rounded-xl border border-white/10 bg-white/5 p-2 text-center hover:bg-white/10 transition">
+              <div className="text-xs text-gray-400 mb-1">Pos {i + 1}</div>
+              <div className="font-semibold">{teamLabel(addr)}</div>
+            </div>
+          );
+        return (
+            <div key={`team-${i}`}>
+              {addr !== ZERO ? (
+                <Link href={teamHref(addr)} prefetch={false} className="block focus:outline-none focus:ring-2 focus:ring-fuchsia-600 rounded-xl">
+                  {pill}
+                </Link>
+              ) : pill}
+            </div>
+          );
+        })}
       </div>
 
-      {/* Board grid: columns = teams, rows = rounds */}
+      {/* Board grid */}
       <div className="overflow-auto">
         <div className="grid" style={{ gridTemplateColumns: `repeat(${teamCap}, minmax(120px, 1fr))`, gap: '8px' }}>
           {Array.from({ length: totalRounds }).map((_, rIdx) => {
