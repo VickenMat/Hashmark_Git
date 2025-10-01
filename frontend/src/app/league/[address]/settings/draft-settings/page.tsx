@@ -1,3 +1,4 @@
+// src/app/league/[address]/settings/draft-settings/page.tsx
 'use client';
 
 import Image from 'next/image';
@@ -38,7 +39,7 @@ const LEAGUE_ABI = [
     ],
     outputs: [],
   },
-  // ---- NEW: authoritative chip settings on-chain ----
+  // Authoritative chips (time per pick, TRR, salary cap, pool)
   {
     type: 'function', name: 'getDraftExtras', stateMutability: 'view', inputs: [],
     outputs: [{
@@ -79,20 +80,12 @@ const DraftTypeDesc: Record<DraftTypeKey, string> = {
 const OrderModeMap = { random: 0, manual: 1 } as const;
 type OrderModeKey = keyof typeof OrderModeMap;
 
-/* helpers */
+/* Utils */
 function shortAddr(a?: string) { if (!a) return '—'; return `${a.slice(0,6)}…${a.slice(-4)}`; }
 function fmtYMD(d: Date) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function arraysEqual(a: readonly string[], b: readonly string[]) { if (a.length!==b.length) return false; for (let i=0;i<a.length;i++) if (a[i]!==b[i]) return false; return true; }
-
-/* ---- NEW: date-only helpers to avoid UTC shift ---- */
-function parseYMDLocal(s: string): Date {
-  const [y, m, d] = s.split('-').map(Number);
-  return new Date(y, (m ?? 1) - 1, d ?? 1); // creates a local Date at 00:00
-}
-function formatYMDForDisplay(s?: string): string {
-  if (!s) return '';
-  return parseYMDLocal(s).toLocaleDateString();
-}
+function parseYMDLocal(s: string): Date { const [y,m,d] = s.split('-').map(Number); return new Date(y, (m??1)-1, d??1); }
+function formatYMDForDisplay(s?: string): string { if (!s) return ''; return parseYMDLocal(s).toLocaleDateString(); }
 
 function useOnClickOutside(ref: React.RefObject<HTMLElement>, fn: () => void) {
   useEffect(() => {
@@ -100,49 +93,6 @@ function useOnClickOutside(ref: React.RefObject<HTMLElement>, fn: () => void) {
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [ref, fn]);
-}
-
-function Calendar({ value, onChange }: { value?: string; onChange: (d: string) => void }) {
-  const [view, setView] = useState(() => value ? parseYMDLocal(value) : new Date());
-  useEffect(() => { if (value) setView(parseYMDLocal(value)); }, [value]);
-
-  const days = useMemo(() => {
-    const first = new Date(view.getFullYear(), view.getMonth(), 1);
-    const startDay = first.getDay(); const grid: Date[] = [];
-    for (let i = 0; i < startDay; i++) grid.push(new Date(view.getFullYear(), view.getMonth(), -startDay + i + 1));
-    const lastDate = new Date(view.getFullYear(), view.getMonth()+1, 0).getDate();
-    for (let d = 1; d <= lastDate; d++) grid.push(new Date(view.getFullYear(), view.getMonth(), d));
-    while (grid.length % 7 !== 0) { const last = grid[grid.length-1]; grid.push(new Date(last.getFullYear(), last.getMonth(), last.getDate()+1)); }
-    return grid;
-  }, [view]);
-
-  const selected = value ? parseYMDLocal(value) : undefined;
-  const WEEKDAYS = ['S','M','T','W','T','F','S'];
-  return (
-    <div className="rounded-xl border border-gray-700 bg-[#0b0b12] p-3 w-72 text-sm shadow-xl">
-      <div className="flex items-center justify-between mb-2">
-        <button className="px-2 py-1 rounded border border-gray-700 hover:border-white/60"
-          onClick={() => setView(v => new Date(v.getFullYear(), v.getMonth()-1, 1))}>‹</button>
-        <div className="font-semibold">{view.toLocaleString(undefined,{month:'long',year:'numeric'})}</div>
-        <button className="px-2 py-1 rounded border border-gray-700 hover:border-white/60"
-          onClick={() => setView(v => new Date(v.getFullYear(), v.getMonth()+1, 1))}>›</button>
-      </div>
-      <div className="grid grid-cols-7 gap-1 text-center text-gray-400 mb-1">{WEEKDAYS.map((d,i)=><div key={i}>{d}</div>)}</div>
-      <div className="grid grid-cols-7 gap-1 text-center">
-        {days.map((d,i)=> {
-          const inMonth = d.getMonth()===view.getMonth();
-          const isSel = selected && fmtYMD(d)===fmtYMD(selected);
-          return (
-            <button key={`${fmtYMD(d)}-${i}`} onClick={()=>onChange(fmtYMD(d))}
-              className={['py-1 rounded', inMonth?'text-white':'text-gray-500',
-                isSel?'bg-fuchsia-600':'hover:bg-white/10 border border-transparent hover:border-white/10'].join(' ')}>
-              {d.getDate()}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
 }
 
 function timeOptions12h() {
@@ -154,7 +104,7 @@ function timeOptions12h() {
   return out;
 }
 
-/* UI persistence */
+/* UI persistence mirror (non-authoritative) */
 type UIState = {
   salaryCap: string;
   thirdRoundReversal: boolean;
@@ -168,10 +118,9 @@ const loadUI = (league: string): UIState => {
   try { const raw = localStorage.getItem(uiKey(league)); return raw ? { ...DEFAULT_UI, ...JSON.parse(raw) } : DEFAULT_UI; }
   catch { return DEFAULT_UI; }
 };
-const saveUI = (league: string, ui: UIState) => {
-  if (typeof window === 'undefined') return;
-  try { localStorage.setItem(uiKey(league), JSON.stringify(ui)); } catch {}
-};
+const saveUI = (league: string, ui: UIState) => { try { localStorage.setItem(uiKey(league), JSON.stringify(ui)); } catch {} };
+
+/* ──────────────────────────────────────────────────────────────────────────── */
 
 export default function DraftSettings() {
   const { address: league } = useParams<{ address: `0x${string}` }>();
@@ -195,22 +144,19 @@ export default function DraftSettings() {
   const [currentType, currentTs, currentOrderMode, currentCompleted, currentManualOrder, currentPickTrading] =
     (settings as [number, bigint, number, boolean, string[], boolean] | undefined) || [0, 0n, 0, false, [], false];
 
-  // NEW: authoritative chip settings
   const extrasRes = useReadContract({
-    abi: LEAGUE_ABI,
-    address: league,
-    functionName: 'getDraftExtras',
-    query: { refetchInterval: 5000, staleTime: 0 }
+    abi: LEAGUE_ABI, address: league, functionName: 'getDraftExtras',
+    query: { refetchInterval: 5000, staleTime: 0 },
   });
 
-  /* ---------------- LOCK: within 1h to start OR live ---------------- */
+  /* LOCK: within 1h to start OR live */
   const nowSec = Math.floor(Date.now()/1000);
   const startAt = Number(currentTs || 0n);
   const withinHour = startAt > 0 && nowSec >= (startAt - 3600) && !currentCompleted;
   const live = startAt > 0 && nowSec >= startAt && !currentCompleted;
   const settingsLocked = withinHour || live;
 
-  /* header look only */
+  /* Header look only */
   useTeamProfile?.(league as string, wallet as string);
 
   /* state */
@@ -232,7 +178,7 @@ export default function DraftSettings() {
   const [playerPool, setPlayerPool] = useState<PlayerPool>('all');
   const [timePerPick, setTimePerPick] = useState<PickPreset>('60s');
 
-  // load persisted UI (only as placeholder before chain read)
+  // load persisted UI (placeholder before chain read)
   useEffect(() => {
     if (!league) return;
     const ui = loadUI(league);
@@ -242,13 +188,13 @@ export default function DraftSettings() {
     setTimePerPick(ui.timePerPick);
   }, [league]);
 
-  // persist UI mirror (not authoritative)
+  // persist UI mirror
   useEffect(() => {
     if (!league) return;
     saveUI(league, { salaryCap, thirdRoundReversal, playerPool, timePerPick });
   }, [league, salaryCap, thirdRoundReversal, playerPool, timePerPick]);
 
-  // prefill from chain (existing)
+  // prefill from chain
   useEffect(() => {
     setDraftType((['snake','salary','autopick','offline'] as DraftTypeKey[])[currentType] ?? 'snake');
     setOrderMode((['random','manual'] as OrderModeKey[])[currentOrderMode] ?? 'random');
@@ -313,10 +259,9 @@ export default function DraftSettings() {
     return Math.floor(new Date(yyyy, mm-1, dd, hh, mi, 0, 0).getTime()/1000);
   }, [date, time24]);
 
-  /* ---- NEW: timezone label ---- */
+  // timezone label
   const tzInfo = useMemo(() => {
-    const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
-      .formatToParts(new Date());
+    const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).formatToParts(new Date());
     const short = (parts.find(p => p.type === 'timeZoneName')?.value || '').replace(/^GMT/, 'UTC');
     const iana = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
     return { short, iana };
@@ -340,7 +285,7 @@ export default function DraftSettings() {
     return true;
   };
 
-  // NEW: map UI -> on-chain
+  // map UI → on-chain
   const playerPoolToUint = (p: 'all'|'rookies'|'vets') => p === 'rookies' ? 1 : p === 'vets' ? 2 : 0;
   const pickPresetToSeconds = (p: typeof PICK_PRESETS[number]) => {
     if (p === 'no-limit') return 0;
@@ -368,7 +313,7 @@ export default function DraftSettings() {
     setTimePerPick(preset);
   }, [extrasRes.data]);
 
-  // --------- SAFE HELPERS ----------
+  // SAFE helpers
   const nameForAddress = (addr?: `0x${string}`, idx?: number) => {
     if (!addr || addr === ZERO) return `Team ${idx !== undefined ? idx + 1 : '?'}`;
     const t = filledTeams.find(ft => ft?.owner && ft.owner.toLowerCase() === addr.toLowerCase());
@@ -376,7 +321,6 @@ export default function DraftSettings() {
   };
   const avatarForAddress = (addr?: `0x${string}`) =>
     addr && addr !== ZERO ? generatedLogoFor(addr) : '/placeholder.png';
-  // --------------------------------------------------------------
 
   // SAVE — write canonical settings to chain (then mirror to local)
   const handleSave = async () => {
@@ -401,7 +345,7 @@ export default function DraftSettings() {
       });
       await publicClient.waitForTransactionReceipt({ hash: hash1 });
 
-      // 2) NEW — authoritative chip settings
+      // 2) Authoritative chips
       const tppSec = pickPresetToSeconds(timePerPick);
       const poolU8 = playerPoolToUint(playerPool);
       const cap = Math.max(0, Number.parseInt(salaryCap || '400')) || 400;
@@ -414,7 +358,7 @@ export default function DraftSettings() {
       });
       await publicClient.waitForTransactionReceipt({ hash: hash2 });
 
-      // Mirror to local for quick UX; chain is authoritative
+      // Mirror to local quick UX; chain is authoritative
       saveUI(league, { salaryCap, thirdRoundReversal, playerPool, timePerPick });
 
       toast.success('Draft settings saved on-chain.', { id });
@@ -439,14 +383,9 @@ export default function DraftSettings() {
       <main className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white px-6 py-10">
         <div className="mx-auto max-w-xl text-center rounded-2xl border border-white/10 bg-white/[0.04] p-6">
           <div className="text-2xl font-bold mb-2" style={{ color: ZIMA }}>Draft Settings Locked</div>
-          <p className="text-sm text-gray-300">
-            Settings are locked within 1 hour of the scheduled start and during the live draft.
-          </p>
+          <p className="text-sm text-gray-300">Settings are locked within 1 hour of the scheduled start and during the live draft.</p>
           <div className="mt-4">
-            <Link
-              href={`/league/${league}`}
-              className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 inline-block hover:bg-white/15"
-            >
+            <Link href={`/league/${league}`} className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 inline-block hover:bg-white/15">
               Go to Draft Room
             </Link>
           </div>
@@ -454,6 +393,54 @@ export default function DraftSettings() {
       </main>
     );
   }
+
+  /* ─────────────────────────────────────────────────────────────────────── */
+
+  // Calendar popover
+  function Calendar({ value, onChange }: { value?: string; onChange: (d: string) => void }) {
+    const [view, setView] = useState(() => value ? parseYMDLocal(value) : new Date());
+    useEffect(() => { if (value) setView(parseYMDLocal(value)); }, [value]);
+
+    const days = useMemo(() => {
+      const first = new Date(view.getFullYear(), view.getMonth(), 1);
+      const startDay = first.getDay(); const grid: Date[] = [];
+      for (let i = 0; i < startDay; i++) grid.push(new Date(view.getFullYear(), view.getMonth(), -startDay + i + 1));
+      const lastDate = new Date(view.getFullYear(), view.getMonth()+1, 0).getDate();
+      for (let d = 1; d <= lastDate; d++) grid.push(new Date(view.getFullYear(), view.getMonth(), d));
+      while (grid.length % 7 !== 0) { const last = grid[grid.length-1]; grid.push(new Date(last.getFullYear(), last.getMonth(), last.getDate()+1)); }
+      return grid;
+    }, [view]);
+
+    const selected = value ? parseYMDLocal(value) : undefined;
+    const WEEKDAYS = ['S','M','T','W','T','F','S'];
+    return (
+      <div className="rounded-xl border border-gray-700 bg-[#0b0b12] p-3 w-72 text-sm shadow-xl">
+        <div className="flex items-center justify-between mb-2">
+          <button className="px-2 py-1 rounded border border-gray-700 hover:border-white/60"
+            onClick={() => setView(v => new Date(v.getFullYear(), v.getMonth()-1, 1))}>‹</button>
+          <div className="font-semibold">{view.toLocaleString(undefined,{month:'long',year:'numeric'})}</div>
+        <button className="px-2 py-1 rounded border border-gray-700 hover:border-white/60"
+            onClick={() => setView(v => new Date(v.getFullYear(), v.getMonth()+1, 1))}>›</button>
+        </div>
+        <div className="grid grid-cols-7 gap-1 text-center text-gray-400 mb-1">{WEEKDAYS.map((d,i)=><div key={i}>{d}</div>)}</div>
+        <div className="grid grid-cols-7 gap-1 text-center">
+          {days.map((d,i)=> {
+            const inMonth = d.getMonth()===view.getMonth();
+            const isSel = selected && fmtYMD(d)===fmtYMD(selected);
+            return (
+              <button key={`${fmtYMD(d)}-${i}`} onClick={()=>onChange(fmtYMD(d))}
+                className={['py-1 rounded', inMonth?'text-white':'text-gray-500',
+                  isSel?'bg-fuchsia-600':'hover:bg-white/10 border border-transparent hover:border-white/10'].join(' ')}>
+                {d.getDate()}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  /* ─────────────────────────────────────────────────────────────────────── */
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white px-6 py-10">
@@ -488,7 +475,10 @@ export default function DraftSettings() {
               {(['snake','salary','autopick','offline'] as DraftTypeKey[]).map((key) => {
                 const selected = draftType === key;
                 return (
-                  <button key={key} onClick={() => setDraftType(key)} className={selected ? 'rounded-xl px-4 py-2 font-semibold border' : 'rounded-xl px-4 py-2 font-semibold border bg-gray-800 border-gray-700 hover:border-white'} style={selected ? { background: EGGSHELL, color: '#000', borderColor: EGGSHELL } : { color: EGGSHELL }} title={DraftTypeDesc[key]}>
+                  <button key={key} onClick={() => setDraftType(key)}
+                    className={selected ? 'rounded-xl px-4 py-2 font-semibold border' : 'rounded-xl px-4 py-2 font-semibold border bg-gray-800 border-gray-700 hover:border-white'}
+                    style={selected ? { background: EGGSHELL, color: '#000', borderColor: EGGSHELL } : { color: EGGSHELL }}
+                    title={DraftTypeDesc[key]}>
                     {key === 'snake' ? 'Snake' : key === 'salary' ? 'Salary Cap' : key === 'autopick' ? 'Autopick' : 'Offline'}
                   </button>
                 );
@@ -512,7 +502,7 @@ export default function DraftSettings() {
               <div className="mt-4 flex items-center justify-center gap-2">
                 <input type="checkbox" checked={thirdRoundReversal} onChange={(e) => setThirdRoundReversal(e.target.checked)} />
                 <span className="text-sm" style={{ color: EGGSHELL }}>
-                  Third Round Reversal (Round 3 follows Round 2 order; helps balance elite picks)
+                  Third Round Reversal (Round 3 follows Round 2 order; only the true reversal pick (3.1) is highlighted in orange in the board)
                 </span>
               </div>
             )}
@@ -564,7 +554,7 @@ export default function DraftSettings() {
             <div className="mt-6">
               <label className="block mb-2 text-lg font-bold" style={{ color: ZIMA }}>Time per Pick</label>
               <div className="flex flex-wrap justify-center gap-2">
-                {PICK_PRESETS.map((p) => {
+                {(['no-limit','15s','30s','45s','60s','90s','120s','180s','300s','600s','1h','2h','4h','8h','12h','24h'] as const).map((p) => {
                   const selected = timePerPick === p;
                   return (
                     <button key={p} onClick={()=>setTimePerPick(p)}

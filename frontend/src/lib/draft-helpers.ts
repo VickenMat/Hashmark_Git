@@ -1,3 +1,4 @@
+// src/lib/draft-helpers.ts
 export type UISettings = {
   salaryCap: string;
   thirdRoundReversal: boolean;
@@ -29,7 +30,7 @@ export function parsePickPresetToSeconds(preset: UISettings['timePerPick']): num
 }
 
 type Team = { owner: `0x${string}`; name: string };
-const ZERO = '0x0000000000000000000000000000000000000000' as const;
+export const ZERO = '0x0000000000000000000000000000000000000000' as const;
 
 /**
  * Compute initial Round 1 order from:
@@ -39,9 +40,8 @@ const ZERO = '0x0000000000000000000000000000000000000000' as const;
 export function getInitialOrder(params: {
   teams: Team[];
   manualOrder: `0x${string}`[];
-  thirdRoundReversal: boolean; // not used for R1, but kept for signature uniqueness
 }) {
-  const { teams, manualOrder, thirdRoundReversal } = params;
+  const { teams, manualOrder } = params;
 
   let order: `0x${string}`[] = [];
   if (manualOrder && manualOrder.length) {
@@ -52,7 +52,7 @@ export function getInitialOrder(params: {
     while (order.length < teams.length) order.push(ZERO);
   }
 
-  const signature = `${order.join(',')}|trr:${thirdRoundReversal ? 1 : 0}`;
+  const signature = order.join(',');
   return { order, signature };
 }
 

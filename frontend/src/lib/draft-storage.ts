@@ -5,7 +5,11 @@ export type PickItem = {
   round: number;
   slot: number;                 // 1-based within round
   owner: `0x${string}`;
-  player: string;               // Demo: store player name/ID
+  player: string;               // Player display name / id
+  // optional detail for panels
+  playerName?: string;
+  playerTeam?: string;
+  position?: string;
 };
 
 export type DraftState = {
@@ -13,12 +17,14 @@ export type DraftState = {
   order: `0x${string}`[];       // Round 1 order
   orderSignature: string;       // for invalidation if settings change
   totalRounds: number;
-  startedAt: number;            // ms epoch; 0 = not started (kept for back-compat; page computes seconds)
+  startedAt: number;            // ms epoch; 0 = not started
   paused: boolean;
   currentRound: number;
   currentPickIndex: number;     // 0-based
   picks: PickItem[];
   ended: boolean;
+  // transient clock marker used by the page (not persisted type-strictly)
+  // __pickStartedAt?: number;
 };
 
 const key = (league: string) => `hashmark:draft-state:${league.toLowerCase()}`;
@@ -30,7 +36,6 @@ const chanName = (league: string) =>
 
 function getChannel(league: string): BroadcastChannel | null {
   try {
-    // BroadcastChannel is widely supported (Safari 16.4+, modern Chromium/Firefox)
     return new BroadcastChannel(chanName(league));
   } catch {
     return null;
@@ -52,13 +57,10 @@ export function loadDraftState(league: string): DraftState | null {
 
 /** Save locally and broadcast to other tabs */
 export function saveDraftState(league: string, state: DraftState) {
-  try {
-    localStorage.setItem(key(league), JSON.stringify(state));
-  } catch {}
+  try { localStorage.setItem(key(league), JSON.stringify(state)); } catch {}
   try {
     const ch = getChannel(league);
     ch?.postMessage({ type: 'STATE', state } as WireMsg);
-    // don't keep a channel reference; let GC clean it up
     ch?.close();
   } catch {}
 }
