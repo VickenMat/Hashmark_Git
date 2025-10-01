@@ -11,9 +11,10 @@ type Props = {
   open: boolean;
   onToggle: () => void;
   league: `0x${string}`;
-  draftedNames?: Set<string>;          // ← now optional & guarded
+  draftedNames?: Set<string>;
   onDraft: (p: RankedPlayerRow) => void;
-  whoAmI?: `0x${string}`;              // for queue key
+  whoAmI?: `0x${string}`;
+  canDraft: boolean; // NEW: enable/disable draft button by turn
 };
 
 type SortKey = 'adp' | 'name' | 'position' | 'team' | 'rank';
@@ -21,9 +22,9 @@ type FilterAvail = 'all' | 'available' | 'drafted';
 type FilterPos = 'ALL' | 'QB' | 'RB' | 'WR' | 'TE' | 'K' | 'DST' | 'FLEX';
 
 export default function PlayersDrawer({
-  open, onToggle, league, draftedNames, onDraft, whoAmI,
+  open, onToggle, league, draftedNames, onDraft, whoAmI, canDraft,
 }: Props) {
-  const drafted = draftedNames ?? new Set<string>();  // ✅ guard against undefined
+  const drafted = draftedNames ?? new Set<string>();
 
   const [rows, setRows] = useState<RankedPlayerRow[]>([]);
   const [sortKey, setSortKey] = useState<SortKey>('adp');
@@ -31,7 +32,7 @@ export default function PlayersDrawer({
   const [pos, setPos] = useState<FilterPos>('ALL');
   const [avail, setAvail] = useState<FilterAvail>('available');
 
-  // Load CSV (and cache for autopick)
+  // Load CSV
   useEffect(() => {
     let live = true;
     (async () => {
@@ -39,14 +40,13 @@ export default function PlayersDrawer({
         const resp = await fetch('/hashmark-top300.csv', { cache: 'no-store' });
         const text = await resp.text();
         const lines = text.trim().split(/\r?\n/);
-        const header = lines[0].toLowerCase();
-        const columns = header.split(',');
+        const cols = lines[0].toLowerCase().split(',');
         const idx = {
-          rank: columns.findIndex(h => /^(rank|#)$/i.test(h.trim())),
-          name: columns.findIndex(h => /^name$/i.test(h.trim())),
-          position: columns.findIndex(h => /^(position|pos)$/i.test(h.trim())),
-          team: columns.findIndex(h => /^team$/i.test(h.trim())),
-          adp: columns.findIndex(h => /^adp$/i.test(h.trim())),
+          rank: cols.findIndex(h => /^(rank|#)$/i.test(h.trim())),
+          name: cols.findIndex(h => /^name$/i.test(h.trim())),
+          position: cols.findIndex(h => /^(position|pos)$/i.test(h.trim())),
+          team: cols.findIndex(h => /^team$/i.test(h.trim())),
+          adp: cols.findIndex(h => /^adp$/i.test(h.trim())),
         };
         const list: RankedPlayerRow[] = lines.slice(1).map((ln) => {
           const t = ln.split(',').map(s => s.trim());
@@ -56,7 +56,6 @@ export default function PlayersDrawer({
         }).filter(x => !!x?.name);
         if (!live) return;
         setRows(list);
-        try { localStorage.setItem('players:board', JSON.stringify(list)); } catch {}
       } catch {
         if (!live) return;
         setRows([]);
@@ -65,7 +64,7 @@ export default function PlayersDrawer({
     return () => { live = false; };
   }, []);
 
-  // Queue storage helpers
+  // Queue storage
   const qKey = whoAmI ? `queue:${whoAmI.toLowerCase()}` : undefined;
   const [queueNames, setQueueNames] = useState<Set<string>>(new Set());
   useEffect(() => {
@@ -77,22 +76,18 @@ export default function PlayersDrawer({
     } catch {}
   }, [qKey]);
 
-  // Derived table
-  const filtered = useMemo(() => {
-    return rows.filter(r => {
-      if (pos !== 'ALL' && r.position !== pos) return false;
-      const isDrafted = drafted.has(r.name);
-      if (avail === 'available' && isDrafted) return false;
-      if (avail === 'drafted' && !isDrafted) return false;
-      return true;
-    });
-  }, [rows, pos, avail, drafted]);
+  const filtered = useMemo(() => rows.filter(r => {
+    if (pos !== 'ALL' && r.position !== pos) return false;
+    const isDrafted = drafted.has(r.name);
+    if (avail === 'available' && isDrafted) return false;
+    if (avail === 'drafted' && !isDrafted) return false;
+    return true;
+  }), [rows, pos, avail, drafted]);
 
   const sorted = useMemo(() => {
-    const key = sortKey;
     const dir = sortDir === 'asc' ? 1 : -1;
     return [...filtered].sort((a,b) => {
-      const av = val(a, key); const bv = val(b, key);
+      const av = val(a, sortKey); const bv = val(b, sortKey);
       if (av < bv) return -1 * dir;
       if (av > bv) return  1 * dir;
       return 0;
@@ -100,7 +95,6 @@ export default function PlayersDrawer({
   }, [filtered, sortKey, sortDir]);
 
   const isQueued = (name: string) => queueNames.has(name);
-
   const toggleQueue = (p: RankedPlayerRow) => {
     if (!qKey) return;
     try {
@@ -108,18 +102,14 @@ export default function PlayersDrawer({
       const arr: RankedPlayerRow[] = raw ? JSON.parse(raw) : [];
       const exists = arr.find(x => x.name === p.name);
       let next: RankedPlayerRow[];
-      if (exists) {
-        next = arr.filter(x => x.name !== p.name);
-      } else {
-        // insert in ADP order
-        next = [...arr, p].sort((a,b)=> (num(a.adp,a.rank) - num(b.adp,b.rank)));
-      }
+      if (exists) next = arr.filter(x => x.name !== p.name);
+      else next = [...arr, p].sort((a,b)=> (num(a.adp,a.rank) - num(b.adp,b.rank)));
       localStorage.setItem(qKey, JSON.stringify(next));
       setQueueNames(new Set(next.map(x => x.name)));
     } catch {}
   };
 
-  const handleReset = () => {
+  const handleResetFilters = () => {
     setSortKey('adp'); setSortDir('asc'); setPos('ALL'); setAvail('available');
   };
 
@@ -140,21 +130,27 @@ export default function PlayersDrawer({
 
   return (
     <>
-      <div
-        className="fixed inset-x-0 bottom-0 z-[50] transition-transform duration-300"
-        style={{ transform: open ? 'translateY(0)' : 'translateY(calc(50vh - 2.5rem))' }}
-      >
-        <div className="mx-auto max-w-6xl">
+      {/* Handle */}
+      <div className="fixed inset-x-0 bottom-0 z-[70] pointer-events-none">
+        <div className="mx-auto max-w-6xl pointer-events-auto">
           <button
             onClick={onToggle}
             className="mx-auto block rounded-t-2xl border-x border-t border-white/15 bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
-            title={open ? 'Collapse players' : 'Show players'}
+            title={open ? 'Hide players' : 'Show players'}
           >
             {open ? '▼ Hide Players' : '▲ Show Players'}
           </button>
         </div>
+      </div>
 
-        <div className="mx-auto max-w-6xl h-[50vh] overflow-y-auto rounded-t-2xl border-x border-t border-white/15 bg-black/70 backdrop-blur px-3 py-2">
+      {/* Drawer */}
+      <div
+        className="fixed inset-x-0 bottom-0 z-[69] transition-transform duration-300"
+        style={{
+          transform: open ? 'translateY(0)' : 'translateY(calc(100% - 2.5rem))',
+        }}
+      >
+        <div className="mx-auto max-w-6xl h-[55vh] overflow-y-auto rounded-t-2xl border-x border-t border-white/15 bg-black/80 backdrop-blur px-3 py-2">
           {/* Controls */}
           <div className="mb-2 flex flex-wrap items-center gap-2">
             <div className="text-xs opacity-80" style={{ color: EGGSHELL }}>Filters:</div>
@@ -166,7 +162,7 @@ export default function PlayersDrawer({
               <option value="drafted">Drafted</option>
               <option value="all">All</option>
             </select>
-            <button onClick={handleReset} className="ml-auto rounded-xl border border-white/15 bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">Reset</button>
+            <button onClick={handleResetFilters} className="ml-auto rounded-xl border border-white/15 bg-white/10 px-3 py-1.5 text-sm hover:bg-white/15">Reset</button>
           </div>
 
           {/* Table */}
@@ -176,7 +172,7 @@ export default function PlayersDrawer({
             </div>
           ) : (
             <table className="w-full text-sm">
-              <thead className="sticky top-0 bg-black/80">
+              <thead className="sticky top-0 bg-black/75">
                 <tr className="text-left" style={{ color: ZIMA }}>
                   {th('adp', 'ADP')}
                   {th('name', 'Name')}
@@ -189,6 +185,7 @@ export default function PlayersDrawer({
               <tbody>
                 {sorted.map(p => {
                   const alreadyDrafted = drafted.has(p.name);
+                  const disabled = alreadyDrafted || !canDraft;
                   return (
                     <tr key={`${p.rank}-${p.name}`} className="border-t border-white/10">
                       <td className="py-1.5 px-2 font-mono">{displayAdp(p)}</td>
@@ -210,14 +207,18 @@ export default function PlayersDrawer({
                             ⭐
                           </button>
                           <button
-                            onClick={() => !alreadyDrafted && onDraft(p)}
-                            disabled={alreadyDrafted}
+                            onClick={() => !disabled && onDraft(p)}
+                            disabled={disabled}
                             className={`rounded-xl px-3 py-1.5 text-xs font-bold ${
-                              alreadyDrafted
+                              disabled
                                 ? 'bg-gray-700/40 border border-gray-700/60 opacity-60 cursor-not-allowed'
                                 : 'bg-emerald-600 hover:bg-emerald-700 border border-emerald-700/50'
                             }`}
-                            title={alreadyDrafted ? 'Already drafted' : 'Draft player'}
+                            title={
+                              alreadyDrafted ? 'Already drafted'
+                              : !canDraft ? 'Not your turn'
+                              : 'Draft player'
+                            }
                           >
                             DRAFT
                           </button>
@@ -239,20 +240,11 @@ function displayAdp(p: RankedPlayerRow) {
   const v = Number.isFinite(p.adp) ? p.adp! : p.rank;
   return Number.isFinite(v) ? v : '—';
 }
-
-function val(r: RankedPlayerRow, key: SortKey) {
+function val(r: RankedPlayerRow, key: 'adp'|'name'|'position'|'team'|'rank') {
   if (key === 'name' || key === 'team' || key === 'position') return (r as any)[key] || '';
   if (key === 'adp') return Number.isFinite(r.adp) ? (r.adp as number) : r.rank;
   if (key === 'rank') return r.rank;
   return '';
 }
-
-function safeNum(s?: string, fallback = 999999) {
-  const n = Number(s ?? '');
-  return Number.isFinite(n) ? n : fallback;
-}
-function num(a?: number, fallback?: number) {
-  if (Number.isFinite(a)) return a as number;
-  if (Number.isFinite(fallback)) return fallback as number;
-  return Number.MAX_SAFE_INTEGER;
-}
+function safeNum(s?: string, fallback = 999999) { const n = Number(s ?? ''); return Number.isFinite(n) ? n : fallback; }
+function num(a?: number, fallback?: number) { if (Number.isFinite(a)) return a as number; if (Number.isFinite(fallback)) return fallback as number; return Number.MAX_SAFE_INTEGER; }

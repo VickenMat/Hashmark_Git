@@ -2,6 +2,7 @@
 
 import React, { useMemo } from 'react';
 import TeamInline from './TeamInline';
+import { loadDraftState } from '@/lib/draft-storage';
 
 type Address = `0x${string}`;
 type Pick = { round: number; slot: number; owner: Address; player?: string; playerName?: string; playerTeam?: string; position?: string };
@@ -11,11 +12,17 @@ export default function PanelHistory({
   picks,
 }: {
   league: Address;
-  picks: Pick[];
+  picks?: Pick[];
 }) {
+  const rows: Pick[] = useMemo(() => {
+    if (Array.isArray(picks)) return picks;
+    const s = loadDraftState(league);
+    return Array.isArray(s?.picks) ? (s!.picks as Pick[]) : [];
+  }, [league, picks]);
+
   const ordered = useMemo(() => {
-    return picks.slice().sort((a,b)=> (a.round - b.round) || (a.slot - b.slot));
-  }, [picks]);
+    return [...rows].sort((a, b) => (a.round - b.round) || (a.slot - b.slot));
+  }, [rows]);
 
   if (ordered.length === 0) {
     return <p className="text-sm text-gray-300 text-center">No picks yet.</p>;

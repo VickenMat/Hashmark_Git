@@ -9,15 +9,17 @@ export default function PanelQueue({
   whoAmI,
   draftedNames,
   onDraft,
+  canDraft, // NEW
 }: {
   whoAmI?: `0x${string}`;
   draftedNames: Set<string>;
   onDraft: (p: RankedPlayerRow) => void;
+  canDraft: boolean;
 }) {
   const qKey = whoAmI ? `queue:${whoAmI.toLowerCase()}` : undefined;
   const [queue, setQueue] = useState<RankedPlayerRow[]>([]);
 
-  // load + live updates when localStorage changes (cheap poll)
+  // load + live updates (cheap poll)
   useEffect(() => {
     if (!qKey) return;
     let t = setInterval(() => {
@@ -56,8 +58,14 @@ export default function PanelQueue({
               </div>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => onDraft(p)}
-                  className="rounded-lg bg-emerald-600 hover:bg-emerald-700 px-3 py-1.5 text-xs font-bold"
+                  onClick={() => canDraft && onDraft(p)}
+                  disabled={!canDraft}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-bold ${
+                    !canDraft
+                      ? 'bg-gray-700/40 border border-gray-700/60 opacity-60 cursor-not-allowed'
+                      : 'bg-emerald-600 hover:bg-emerald-700 border border-emerald-700/50'
+                  }`}
+                  title={canDraft ? 'Draft player' : 'Not your turn'}
                 >
                   DRAFT
                 </button>

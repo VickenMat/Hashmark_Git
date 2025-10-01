@@ -1,78 +1,80 @@
 'use client';
 
 import React from 'react';
-import StatePill from './StatePill';
 
-const EGGSHELL = '#F0EAD6';
 const ZIMA = '#37c0f6';
+const EGGSHELL = '#F0EAD6';
 
-type TabKey = 'draft' | 'queue' | 'history' | 'team' | 'all';
+type Tab = 'draft' | 'queue' | 'history' | 'team' | 'all';
 
 export default function ControlsRow({
   tab,
-  setTab,
-  showSettings,
-  onShowSettings,
+  onTab,
+  league,             // not used, kept for parity
   isCommish,
+  phasePill,
+  canShowPause,
   paused,
-  inGrace,
-  beforeRealStart,
-  ended,
   onTogglePause,
+  onOpenSettings,
 }: {
-  tab: TabKey;
-  setTab: (k: TabKey) => void;
-  showSettings?: boolean;
-  onShowSettings?: () => void;
-  isCommish?: boolean;
-  paused?: boolean;
-  inGrace?: boolean;
-  beforeRealStart?: boolean;
-  ended?: boolean;
-  onTogglePause?: () => void;
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  league: `0x${string}`;
+  isCommish: boolean;
+  phasePill: React.ReactNode;
+  canShowPause: boolean;
+  paused: boolean;
+  onTogglePause: () => void;
+  onOpenSettings: () => void;
 }) {
-  const phasePill = (() => {
-    if (ended) return <StatePill color="DONE">Completed</StatePill>;
-    if (paused) return <StatePill color="PAUSED">Paused</StatePill>;
-    if (beforeRealStart) return <StatePill color={inGrace ? 'GRACE' : 'SOON'}>{inGrace ? 'Grace' : 'Starting Soon'}</StatePill>;
-    return <StatePill color="LIVE">Live</StatePill>;
-  })();
+  const tabs: Tab[] = ['draft', 'queue', 'history', 'team', 'all'];
 
   return (
-    <div className="mx-auto mb-3 flex max-w-6xl flex-wrap items-center gap-2">
-      {(['draft','queue','history','team','all'] as const).map(k => (
-        <button
-          key={k}
-          onClick={() => setTab(k)}
-          className={`rounded-2xl px-3 py-1.5 text-sm transition border ${tab === k ? 'bg-white/10' : 'hover:bg-white/5'}`}
-          style={{ color: EGGSHELL, borderColor: k === 'draft' ? ZIMA : 'rgba(255,255,255,.16)' }}
-        >
-          {k === 'draft' ? 'Draft' : k === 'queue' ? 'Queue' : k === 'history' ? 'History' : k === 'team' ? 'My Team' : 'All Teams'}
-        </button>
-      ))}
+    <div className="flex flex-wrap items-center gap-2">
+      {tabs.map((k) => {
+        const label =
+          k === 'all' ? 'All Teams' :
+          k === 'team' ? 'My Team' :
+          k[0].toUpperCase() + k.slice(1);
+        const active = tab === k;
+        return (
+          <button
+            key={k}
+            onClick={() => onTab(k)}
+            className={`rounded-2xl px-3 py-1.5 text-sm border transition-all no-underline
+              ${active ? 'ring-1' : 'opacity-80 hover:opacity-100'}`}
+            style={{
+              color: EGGSHELL,
+              borderColor: active ? ZIMA : 'rgba(255,255,255,0.18)',
+              background: active ? 'rgba(55,192,246,0.08)' : 'transparent',
+            }}
+          >
+            {label}
+          </button>
+        );
+      })}
 
-      {/* Right side actions */}
+      <button
+        onClick={onOpenSettings}
+        className="rounded-2xl px-3 py-1.5 text-sm border transition-all no-underline"
+        style={{ color: EGGSHELL, borderColor: 'rgba(255,255,255,0.18)' }}
+      >
+        Settings
+      </button>
+
       <div className="ml-auto flex items-center gap-2">
-        <button
-          onClick={onShowSettings}
-          className="rounded-lg border px-3 py-1.5 text-sm no-underline hover:bg-white/10"
-          title="Draft Settings"
-        >
-          Settings
-        </button>
-
-        {/* Pills now live here (moved below tabs by being inside this component) */}
         {phasePill}
-
-        {/* Hide Pause during grace */}
-        {isCommish && !inGrace && (
+        {isCommish && canShowPause && (
           <button
             onClick={onTogglePause}
-            className={`rounded-lg border px-3 py-1.5 text-sm no-underline ${
-              paused ? 'bg-emerald-600 hover:bg-emerald-700 border-emerald-700/50' :
-                       'bg-amber-600 hover:bg-amber-700 border-amber-700/50'
-            }`}
-            title={paused ? 'Resume Draft' : 'Pause Draft'}
+            className={`rounded-2xl px-3 py-1.5 text-sm border transition-all no-underline font-semibold`}
+            style={{
+              color: paused ? '#0b3b16' : '#3b2a07',
+              borderColor: paused ? 'rgba(16,185,129,0.6)' : 'rgba(245,158,11,0.6)',
+              background: paused ? 'rgba(16,185,129,0.85)' : 'rgba(245,158,11,0.85)',
+            }}
+            aria-label={paused ? 'Resume draft' : 'Pause draft'}
           >
             {paused ? 'Resume' : 'Pause'}
           </button>
