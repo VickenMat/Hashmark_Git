@@ -84,6 +84,16 @@ function shortAddr(a?: string) { if (!a) return '—'; return `${a.slice(0,6)}�
 function fmtYMD(d: Date) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function arraysEqual(a: readonly string[], b: readonly string[]) { if (a.length!==b.length) return false; for (let i=0;i<a.length;i++) if (a[i]!==b[i]) return false; return true; }
 
+/* ---- NEW: date-only helpers to avoid UTC shift ---- */
+function parseYMDLocal(s: string): Date {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, (m ?? 1) - 1, d ?? 1); // creates a local Date at 00:00
+}
+function formatYMDForDisplay(s?: string): string {
+  if (!s) return '';
+  return parseYMDLocal(s).toLocaleDateString();
+}
+
 function useOnClickOutside(ref: React.RefObject<HTMLElement>, fn: () => void) {
   useEffect(() => {
     function onDown(e: MouseEvent) { if (!ref.current) return; if (!ref.current.contains(e.target as Node)) fn(); }
@@ -91,9 +101,11 @@ function useOnClickOutside(ref: React.RefObject<HTMLElement>, fn: () => void) {
     return () => document.removeEventListener('mousedown', onDown);
   }, [ref, fn]);
 }
+
 function Calendar({ value, onChange }: { value?: string; onChange: (d: string) => void }) {
-  const [view, setView] = useState(() => new Date(value ? value : Date.now()));
-  useEffect(() => { if (value) setView(new Date(value)); }, [value]);
+  const [view, setView] = useState(() => value ? parseYMDLocal(value) : new Date());
+  useEffect(() => { if (value) setView(parseYMDLocal(value)); }, [value]);
+
   const days = useMemo(() => {
     const first = new Date(view.getFullYear(), view.getMonth(), 1);
     const startDay = first.getDay(); const grid: Date[] = [];
@@ -103,7 +115,8 @@ function Calendar({ value, onChange }: { value?: string; onChange: (d: string) =
     while (grid.length % 7 !== 0) { const last = grid[grid.length-1]; grid.push(new Date(last.getFullYear(), last.getMonth(), last.getDate()+1)); }
     return grid;
   }, [view]);
-  const selected = value ? new Date(value) : undefined;
+
+  const selected = value ? parseYMDLocal(value) : undefined;
   const WEEKDAYS = ['S','M','T','W','T','F','S'];
   return (
     <div className="rounded-xl border border-gray-700 bg-[#0b0b12] p-3 w-72 text-sm shadow-xl">
@@ -131,6 +144,7 @@ function Calendar({ value, onChange }: { value?: string; onChange: (d: string) =
     </div>
   );
 }
+
 function timeOptions12h() {
   const out: { label: string; value24: string }[] = [];
   for (let h=0; h<24; h++) for (let m=0; m<60; m+=15) {
@@ -271,7 +285,7 @@ export default function DraftSettings() {
   );
   useEffect(() => {
     if (orderMode !== 'random') return;
-    const owners = [...filledTeams.map(t => t.owner)];
+    const owners = [...filledTeams.map(t=>t.owner)];
     for (let i=owners.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [owners[i],owners[j]]=[owners[j],owners[i]]; }
     while (owners.length < teams.length) owners.push(ZERO);
     setOrderList(prev => arraysEqual(prev, owners) ? prev : owners as `0x${string}`[]);
@@ -298,6 +312,15 @@ export default function DraftSettings() {
     const [hh, mi] = time24.split(':').map(Number);
     return Math.floor(new Date(yyyy, mm-1, dd, hh, mi, 0, 0).getTime()/1000);
   }, [date, time24]);
+
+  /* ---- NEW: timezone label ---- */
+  const tzInfo = useMemo(() => {
+    const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+      .formatToParts(new Date());
+    const short = (parts.find(p => p.type === 'timeZoneName')?.value || '').replace(/^GMT/, 'UTC');
+    const iana = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    return { short, iana };
+  }, []);
 
   const moveTeam = (idx: number, dir: -1 | 1) => {
     setOrderList(prev => {
@@ -345,7 +368,7 @@ export default function DraftSettings() {
     setTimePerPick(preset);
   }, [extrasRes.data]);
 
-  // --------- SAFE HELPERS (fix for your runtime error) ----------
+  // --------- SAFE HELPERS ----------
   const nameForAddress = (addr?: `0x${string}`, idx?: number) => {
     if (!addr || addr === ZERO) return `Team ${idx !== undefined ? idx + 1 : '?'}`;
     const t = filledTeams.find(ft => ft?.owner && ft.owner.toLowerCase() === addr.toLowerCase());
@@ -501,7 +524,7 @@ export default function DraftSettings() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="relative" ref={calRef}>
                 <button onClick={() => setCalOpen((s)=>!s)} className="w-full text-center bg-black/40 text-white p-3 rounded-xl border border-gray-700 focus:ring-2 focus:ring-fuchsia-600 outline-none">
-                  {date ? new Date(date).toLocaleDateString() : <span style={{ color: EGGSHELL }}>Pick a date</span>}
+                  {date ? formatYMDForDisplay(date) : <span style={{ color: EGGSHELL }}>Pick a date</span>}
                 </button>
                 {calOpen && (
                   <div className="absolute z-10 mt-2">
@@ -509,9 +532,15 @@ export default function DraftSettings() {
                   </div>
                 )}
               </div>
-              <select value={time24} onChange={(e)=>setTime24(e.target.value)} className="w-full text-center bg-black/40 text-white p-3 rounded-xl border border-gray-700 focus:ring-2 focus:ring-fuchsia-600 outline-none">
-                {timeOptions.map((t)=> <option key={t.value24} value={t.value24}>{t.label}</option>)}
-              </select>
+
+              <div className="flex flex-col items-stretch">
+                <select value={time24} onChange={(e)=>setTime24(e.target.value)} className="w-full text-center bg-black/40 text-white p-3 rounded-xl border border-gray-700 focus:ring-2 focus:ring-fuchsia-600 outline-none">
+                  {timeOptions.map((t)=> <option key={t.value24} value={t.value24}>{t.label}</option>)}
+                </select>
+                <div className="text-xs text-gray-400 mt-1">
+                  Time zone: <span className="font-medium">{tzInfo.short}</span>{tzInfo.iana ? ` • ${tzInfo.iana}` : ''}
+                </div>
+              </div>
             </div>
 
             <div className="mt-6">
