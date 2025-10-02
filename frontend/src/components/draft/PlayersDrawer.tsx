@@ -1,11 +1,29 @@
-// src/components/draft/PlayersDrawer.tsx
 'use client';
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { type RankedPlayerRow } from '@/lib/auto-pick';
 
-const ZIMA = '#37c0f6';
 const EGGSHELL = '#F0EAD6';
+
+/** Position colors & translucent backgrounds for drafted rows */
+const POS_TEXT: Record<string, string> = {
+  QB: '#ef4444',     // red
+  RB: '#10b981',     // green
+  WR: '#3b82f6',     // blue
+  TE: '#f59e0b',     // orange
+  'D/ST': '#8b5cf6', // purple
+  DST: '#8b5cf6',
+  K: '#eab308',      // yellow
+};
+const POS_BG: Record<string, string> = {
+  QB: 'rgba(239,68,68,0.15)',
+  RB: 'rgba(16,185,129,0.15)',
+  WR: 'rgba(59,130,246,0.15)',
+  TE: 'rgba(245,158,11,0.15)',
+  'D/ST': 'rgba(139,92,246,0.15)',
+  DST: 'rgba(139,92,246,0.15)',
+  K: 'rgba(234,179,8,0.15)',
+};
 
 type Props = {
   open: boolean;
@@ -14,10 +32,10 @@ type Props = {
   draftedNames?: Set<string>;
   onDraft: (p: RankedPlayerRow) => void;
   whoAmI?: `0x${string}`;
-  canDraft: boolean; // NEW: enable/disable draft button by turn
+  canDraft: boolean; // only the on-clock team can draft
 };
 
-type SortKey = 'adp' | 'name' | 'position' | 'team' | 'rank';
+type SortKey = 'adp' | 'name' | 'position' | 'team';
 type FilterAvail = 'all' | 'available' | 'drafted';
 type FilterPos = 'ALL' | 'QB' | 'RB' | 'WR' | 'TE' | 'K' | 'DST' | 'FLEX';
 
@@ -32,7 +50,7 @@ export default function PlayersDrawer({
   const [pos, setPos] = useState<FilterPos>('ALL');
   const [avail, setAvail] = useState<FilterAvail>('available');
 
-  // Load CSV
+  // Load CSV (board)
   useEffect(() => {
     let live = true;
     (async () => {
@@ -40,31 +58,30 @@ export default function PlayersDrawer({
         const resp = await fetch('/hashmark-top300.csv', { cache: 'no-store' });
         const text = await resp.text();
         const lines = text.trim().split(/\r?\n/);
-        const cols = lines[0].toLowerCase().split(',');
+        const header = lines[0].toLowerCase().split(',');
         const idx = {
-          rank: cols.findIndex(h => /^(rank|#)$/i.test(h.trim())),
-          name: cols.findIndex(h => /^name$/i.test(h.trim())),
-          position: cols.findIndex(h => /^(position|pos)$/i.test(h.trim())),
-          team: cols.findIndex(h => /^team$/i.test(h.trim())),
-          adp: cols.findIndex(h => /^adp$/i.test(h.trim())),
+          rank: header.findIndex(h => /^(rank|#)$/i.test(h.trim())),
+          name: header.findIndex(h => /^name$/i.test(h.trim())),
+          position: header.findIndex(h => /^(position|pos)$/i.test(h.trim())),
+          team: header.findIndex(h => /^team$/i.test(h.trim())),
+          adp: header.findIndex(h => /^adp$/i.test(h.trim())),
         };
-        const list: RankedPlayerRow[] = lines.slice(1).map((ln) => {
-          const t = ln.split(',').map(s => s.trim());
-          const rank = safeNum(t[idx.rank], Number.MAX_SAFE_INTEGER);
-          const adp = safeNum(t[idx.adp], rank);
-          return { rank, adp, name: t[idx.name], position: t[idx.position], team: t[idx.team] };
-        }).filter(x => !!x?.name);
+        const list: RankedPlayerRow[] = lines.slice(1)
+          .map((ln) => {
+            const t = ln.split(',').map(s => s.trim());
+            const rank = safeNum(t[idx.rank], Number.MAX_SAFE_INTEGER);
+            const adp = safeNum(t[idx.adp], rank);
+            return { rank, adp, name: t[idx.name], position: t[idx.position], team: t[idx.team] };
+          })
+          .filter(x => !!x?.name);
         if (!live) return;
         setRows(list);
-      } catch {
-        if (!live) return;
-        setRows([]);
-      }
+      } catch { if (live) setRows([]); }
     })();
     return () => { live = false; };
   }, []);
 
-  // Queue storage
+  // Queue storage for ⭐
   const qKey = whoAmI ? `queue:${whoAmI.toLowerCase()}` : undefined;
   const [queueNames, setQueueNames] = useState<Set<string>>(new Set());
   useEffect(() => {
@@ -75,25 +92,6 @@ export default function PlayersDrawer({
       setQueueNames(new Set(arr.map(x => x.name)));
     } catch {}
   }, [qKey]);
-
-  const filtered = useMemo(() => rows.filter(r => {
-    if (pos !== 'ALL' && r.position !== pos) return false;
-    const isDrafted = drafted.has(r.name);
-    if (avail === 'available' && isDrafted) return false;
-    if (avail === 'drafted' && !isDrafted) return false;
-    return true;
-  }), [rows, pos, avail, drafted]);
-
-  const sorted = useMemo(() => {
-    const dir = sortDir === 'asc' ? 1 : -1;
-    return [...filtered].sort((a,b) => {
-      const av = val(a, sortKey); const bv = val(b, sortKey);
-      if (av < bv) return -1 * dir;
-      if (av > bv) return  1 * dir;
-      return 0;
-    });
-  }, [filtered, sortKey, sortDir]);
-
   const isQueued = (name: string) => queueNames.has(name);
   const toggleQueue = (p: RankedPlayerRow) => {
     if (!qKey) return;
@@ -109,13 +107,29 @@ export default function PlayersDrawer({
     } catch {}
   };
 
-  const handleResetFilters = () => {
-    setSortKey('adp'); setSortDir('asc'); setPos('ALL'); setAvail('available');
-  };
+  // Filters
+  const filtered = useMemo(() => rows.filter(r => {
+    if (pos !== 'ALL' && r.position !== pos) return false;
+    const isDrafted = drafted.has(r.name);
+    if (avail === 'available' && isDrafted) return false;
+    if (avail === 'drafted' && !isDrafted) return false;
+    return true;
+  }), [rows, pos, avail, drafted]);
+
+  // Sorting
+  const sorted = useMemo(() => {
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...filtered].sort((a,b) => {
+      const av = val(a, sortKey); const bv = val(b, sortKey);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return  1 * dir;
+      return 0;
+    });
+  }, [filtered, sortKey, sortDir]);
 
   const th = (k: SortKey, label: string) => (
     <th
-      className="py-2 px-2 cursor-pointer select-none"
+      className="py-2 px-2 cursor-pointer select-none text-left"
       onClick={() => {
         setSortKey(prev => (prev === k ? prev : k));
         setSortDir(prev => (sortKey === k ? (prev === 'asc' ? 'desc' : 'asc') : 'asc'));
@@ -128,14 +142,18 @@ export default function PlayersDrawer({
     </th>
   );
 
+  const handleResetFilters = () => {
+    setSortKey('adp'); setSortDir('asc'); setPos('ALL'); setAvail('available');
+  };
+
   return (
     <>
-      {/* Handle */}
-      <div className="fixed inset-x-0 bottom-0 z-[70] pointer-events-none">
+      {/* Bottom handle — sits above the drawer, always clickable */}
+      <div className="fixed inset-x-0 bottom-0 z-[40] pointer-events-none">
         <div className="mx-auto max-w-6xl pointer-events-auto">
           <button
             onClick={onToggle}
-            className="mx-auto block rounded-t-2xl border-x border-t border-white/15 bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
+            className="mx-auto mb-[-1px] block rounded-t-2xl border-x border-t border-white/15 bg-white/10 px-4 py-2 text-sm hover:bg-white/15"
             title={open ? 'Hide players' : 'Show players'}
           >
             {open ? '▼ Hide Players' : '▲ Show Players'}
@@ -145,10 +163,8 @@ export default function PlayersDrawer({
 
       {/* Drawer */}
       <div
-        className="fixed inset-x-0 bottom-0 z-[69] transition-transform duration-300"
-        style={{
-          transform: open ? 'translateY(0)' : 'translateY(calc(100% - 2.5rem))',
-        }}
+        className="fixed inset-x-0 bottom-0 z-[39] transition-transform duration-300"
+        style={{ transform: open ? 'translateY(0)' : 'translateY(calc(100% - 2.5rem))' }}
       >
         <div className="mx-auto max-w-6xl h-[55vh] overflow-y-auto rounded-t-2xl border-x border-t border-white/15 bg-black/80 backdrop-blur px-3 py-2">
           {/* Controls */}
@@ -173,26 +189,38 @@ export default function PlayersDrawer({
           ) : (
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-black/75">
-                <tr className="text-left" style={{ color: ZIMA }}>
+                <tr className="text-left" style={{ color: '#37c0f6' }}>
                   {th('adp', 'ADP')}
                   {th('name', 'Name')}
                   {th('position', 'Pos')}
                   {th('team', 'Team')}
-                  {th('rank', 'Rank')}
-                  <th className="py-2 px-2 w-32 text-right">Action</th>
+                  <th className="py-2 px-2 text-right w-40">{/* (no title; ⭐ + DRAFT live here) */}</th>
                 </tr>
               </thead>
               <tbody>
                 {sorted.map(p => {
                   const alreadyDrafted = drafted.has(p.name);
                   const disabled = alreadyDrafted || !canDraft;
+                  const posText = (p.position || '').toUpperCase();
+                  const textColor = POS_TEXT[posText] || EGGSHELL;
+                  const draftedBg = alreadyDrafted ? (POS_BG[posText] || 'rgba(255,255,255,0.08)') : 'transparent';
                   return (
-                    <tr key={`${p.rank}-${p.name}`} className="border-t border-white/10">
+                    <tr
+                      key={`${p.rank}-${p.name}`}
+                      className="border-t border-white/10"
+                      style={{ background: draftedBg }}
+                    >
                       <td className="py-1.5 px-2 font-mono">{displayAdp(p)}</td>
-                      <td className="py-1.5 px-2 font-medium" style={{ color: '#F0EAD6' }}>{p.name}</td>
-                      <td className="py-1.5 px-2">{p.position}</td>
+                      <td className="py-1.5 px-2 font-medium" style={{ color: EGGSHELL }}>{p.name}</td>
+                      <td className="py-1.5 px-2">
+                        <span
+                          className="inline-flex items-center rounded px-2 py-[2px] text-xs font-semibold"
+                          style={{ color: textColor, background: 'rgba(255,255,255,0.06)', border: `1px solid ${textColor}33` }}
+                        >
+                          {posText === 'DST' ? 'D/ST' : posText}
+                        </span>
+                      </td>
                       <td className="py-1.5 px-2">{p.team}</td>
-                      <td className="py-1.5 px-2">{p.rank}</td>
                       <td className="py-1.5 px-2 text-right">
                         <div className="inline-flex items-center gap-2">
                           <button
@@ -240,10 +268,9 @@ function displayAdp(p: RankedPlayerRow) {
   const v = Number.isFinite(p.adp) ? p.adp! : p.rank;
   return Number.isFinite(v) ? v : '—';
 }
-function val(r: RankedPlayerRow, key: 'adp'|'name'|'position'|'team'|'rank') {
+function val(r: RankedPlayerRow, key: 'adp'|'name'|'position'|'team') {
   if (key === 'name' || key === 'team' || key === 'position') return (r as any)[key] || '';
   if (key === 'adp') return Number.isFinite(r.adp) ? (r.adp as number) : r.rank;
-  if (key === 'rank') return r.rank;
   return '';
 }
 function safeNum(s?: string, fallback = 999999) { const n = Number(s ?? ''); return Number.isFinite(n) ? n : fallback; }

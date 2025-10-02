@@ -4,28 +4,31 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useAccount, useReadContract, useChainId, useConfig } from 'wagmi';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
+import { useTeamProfile, generatedLogoFor, toHttp } from '@/lib/teamProfile';
 
-function cx(...c: (string | boolean | undefined)[]) { return c.filter(Boolean).join(' '); }
+function cx(...c: (string | boolean | undefined)[]) {
+  return c.filter(Boolean).join(' ');
+}
 function stripSlash(s: string) { return s.replace(/\/+$/, ''); }
-function shortAddr(a?: string){ return a ? `${a.slice(0,6)}…${a.slice(-4)}` : ''; }
+function shortAddr(a?: string) { return a ? `${a.slice(0, 6)}…${a.slice(-4)}` : ''; }
 
 /* Icons */
-const MenuIcon   = (p: React.SVGProps<SVGSVGElement>) => (
+const MenuIcon = (p: React.SVGProps<SVGSVGElement>) => (
   <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" {...p}>
     <path strokeLinecap="round" strokeLinejoin="round" d="M3 6h18M3 12h18M3 18h18" />
   </svg>
 );
-const ChevronDown= (p: React.SVGProps<SVGSVGElement>) => (
+const ChevronDown = (p: React.SVGProps<SVGSVGElement>) => (
   <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" {...p}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6"/>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M6 9l6 6 6-6" />
   </svg>
 );
-const ArrowLeft  = (p: React.SVGProps<SVGSVGElement>) => (
+const ArrowLeft = (p: React.SVGProps<SVGSVGElement>) => (
   <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" {...p}>
-    <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7"/>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
   </svg>
 );
 
@@ -69,16 +72,14 @@ function ThemeToggleSmall({ className }: { className?: string }) {
   );
 }
 
-/* One shared brand class (exact same string on SSR & CSR) */
 const BRAND_TXT = 'font-semibold leading-none text-2xl sm:text-[26px]';
 
-/* ===== TOP BAR connect: AVAX logo + network, then short addr + AVAX amount ===== */
+/* ===== Connect buttons ===== */
 function TopConnect() {
   return (
     <ConnectButton.Custom>
       {({ account, chain, mounted, openAccountModal, openChainModal, openConnectModal }) => {
         if (!mounted) return null;
-
         if (!account) {
           return (
             <button
@@ -89,10 +90,8 @@ function TopConnect() {
             </button>
           );
         }
-
         return (
           <div className="flex items-center gap-2">
-            {/* AVAX logo + network name */}
             <button
               onClick={openChainModal}
               className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/10 px-2.5 py-1 text-base text-white hover:bg-white/15"
@@ -101,8 +100,6 @@ function TopConnect() {
               <Image src="/avalanche-avax-logo.svg" alt="AVAX" width={14} height={14} />
               <span className="truncate">{chain?.name ?? 'Network'}</span>
             </button>
-
-            {/* short address + amount of AVAX */}
             <button
               onClick={openAccountModal}
               className="inline-flex items-center gap-2 rounded-lg border border-white/15 bg-white/10 px-2.5 py-1 text-base text-white/90 hover:text-white hover:bg-white/15"
@@ -110,9 +107,7 @@ function TopConnect() {
               title={account?.address}
             >
               <span className="truncate">{account.displayName}</span>
-              {account.displayBalance && (
-                <span className="tabular-nums">{account.displayBalance}</span>
-              )}
+              {account.displayBalance && <span className="tabular-nums">{account.displayBalance}</span>}
             </button>
           </div>
         );
@@ -120,14 +115,11 @@ function TopConnect() {
     </ConnectButton.Custom>
   );
 }
-
-/* ===== SIDE BAR connect: two stacked, narrow boxes (old method) ===== */
 function ConnectControls() {
   return (
     <ConnectButton.Custom>
       {({ account, chain, mounted, openAccountModal, openChainModal, openConnectModal }) => {
         if (!mounted) return null;
-
         if (!account) {
           return (
             <button
@@ -138,10 +130,8 @@ function ConnectControls() {
             </button>
           );
         }
-
         return (
           <div className="flex flex-col gap-1.5">
-            {/* Narrow network row: AVAX logo + network name + chevron */}
             <button
               onClick={openChainModal}
               className="w-full inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[15px] text-white hover:bg-white/10 transition"
@@ -151,8 +141,6 @@ function ConnectControls() {
               <span className="truncate">{chain?.name ?? 'Network'}</span>
               <span className="ml-auto opacity-80"><ChevronDown /></span>
             </button>
-
-            {/* Narrow account row: short address + amount of AVAX */}
             <button
               onClick={openAccountModal}
               className="w-full inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1.5 text-[15px] text-white hover:bg-white/10 transition"
@@ -175,8 +163,8 @@ function ConnectControls() {
 
 /* On-chain reads */
 const LEAGUE_ABI = [
-  { type:'function', name:'name', stateMutability:'view', inputs:[], outputs:[{type:'string'}] },
-  { type:'function', name:'commissioner', stateMutability:'view', inputs:[], outputs:[{type:'address'}] },
+  { type: 'function', name: 'name', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
+  { type: 'function', name: 'commissioner', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
 ] as const;
 
 function parseMatchupFromPath(p: string) {
@@ -190,31 +178,39 @@ function parseMatchupFromPath(p: string) {
 }
 
 /* Dimensions */
-const SIDEBAR_W = 208;  // keep in sync with globals.css
-const SKINNY_W  = 48;
+const SIDEBAR_W = 208;
+const SKINNY_W = 48;
 const OUT_BTN_GAP = 8;
 
 export default function Navbar() {
   const pathname = usePathname() || '/';
   const { address: wallet } = useAccount();
-
   const chainId = useChainId();
-  const config  = useConfig();
-  const chain   = React.useMemo(() => config?.chains?.find(c => c.id === chainId), [config, chainId]);
+  const config = useConfig();
+  const chain = useMemo(() => config?.chains?.find(c => c.id === chainId), [config, chainId]);
 
   const match = pathname.match(/^\/league\/(0x[0-9a-fA-F]{40})(?:\/|$)/);
   const leagueAddress = (match?.[1] as `0x${string}` | undefined);
   const base = leagueAddress ? `/league/${leagueAddress}` : undefined;
 
-  const { data: leagueNameData } = useReadContract({ abi: LEAGUE_ABI, address: leagueAddress, functionName: 'name', query: { enabled: Boolean(leagueAddress) }});
-  const { data: commissionerData } = useReadContract({ abi: LEAGUE_ABI, address: leagueAddress, functionName: 'commissioner', query: { enabled: Boolean(leagueAddress) }});
+  const { data: leagueNameData } = useReadContract({
+    abi: LEAGUE_ABI,
+    address: leagueAddress,
+    functionName: 'name',
+    query: { enabled: Boolean(leagueAddress) },
+  });
+  const { data: commissionerData } = useReadContract({
+    abi: LEAGUE_ABI,
+    address: leagueAddress,
+    functionName: 'commissioner',
+    query: { enabled: Boolean(leagueAddress) },
+  });
 
-  const leagueName  = (leagueNameData as string | undefined)?.trim();
+  const leagueName = (leagueNameData as string | undefined)?.trim();
   const leagueShort = leagueAddress ? shortAddr(leagueAddress) : 'League';
   const isCommissioner = !!(wallet && commissionerData && wallet.toLowerCase() === String(commissionerData).toLowerCase());
   const myTeamHref = leagueAddress && wallet ? `${base}/team/${wallet}` : `${base}/my-team`;
 
-  /* Hydration-safe UI state */
   const [hydrated, setHydrated] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [overlayMode, setOverlayMode] = useState(false);
@@ -227,7 +223,6 @@ export default function Navbar() {
   }, []);
   useEffect(() => { try { localStorage.setItem('hm:navCollapsed', collapsed ? '1' : '0'); } catch {} }, [collapsed]);
 
-  /* Push content right when expanded on desktop (fullscreen mode) */
   useEffect(() => {
     const cls = 'has-vertical-sidebar';
     if (leagueAddress && !collapsed && !overlayMode) document.body.classList.add(cls);
@@ -235,16 +230,10 @@ export default function Navbar() {
     return () => document.body.classList.remove(cls);
   }, [leagueAddress, collapsed, overlayMode]);
 
-  /* Matchup cache */
   const [matchupHref, setMatchupHref] = useState<string | null>(null);
-  const cacheKey = React.useMemo(
-    () => (leagueAddress && wallet) ? `hashmark:lastMatchup:${leagueAddress}:${wallet.toLowerCase()}` : null,
-    [leagueAddress, wallet]
-  );
-  const readCached = React.useCallback(() => {
-    if (!cacheKey) return null;
-    try { return localStorage.getItem(cacheKey); } catch { return null; }
-  }, [cacheKey]);
+  const cacheKey = useMemo(() => (leagueAddress && wallet) ? `hashmark:lastMatchup:${leagueAddress}:${wallet.toLowerCase()}` : null, [leagueAddress, wallet]);
+  const readCached = useCallback(() => { if (!cacheKey) return null; try { return localStorage.getItem(cacheKey); } catch { return null; } }, [cacheKey]);
+
   useEffect(() => {
     if (!base) { setMatchupHref(null); return; }
     setMatchupHref(readCached() || `${base}/scoreboard`);
@@ -266,22 +255,22 @@ export default function Navbar() {
   }, [pathname, leagueAddress, wallet, base, cacheKey, readCached, matchupHref]);
 
   const leagueMenu = useMemo(() => !leagueAddress || !base ? [] : [
-    { label: 'Members',         href: `${base}/members` },
-    { label: 'Rosters',         href: `${base}/rosters` },
-    { label: 'Schedule',        href: `${base}/schedule` },
+    { label: 'Members', href: `${base}/members` },
+    { label: 'Rosters', href: `${base}/rosters` },
+    { label: 'Schedule', href: `${base}/schedule` },
     { label: 'Recent Activity', href: `${base}/activity` },
-    { label: 'Players',         href: `${base}/players` },
-    { label: 'History',         href: `${base}/history` },
+    { label: 'Players', href: `${base}/players` },
+    { label: 'History', href: `${base}/history` },
   ], [leagueAddress, base]);
 
   const mainTabs = useMemo(() => {
     if (!leagueAddress || !base) return [];
     const tabs = [
-      { key: 'my-team',   label: 'My Team',    href: myTeamHref },
-      { key: 'matchup',   label: 'Matchup',    href: matchupHref || `${base}/scoreboard` },
-      { key: 'scoreboard',label: 'Scoreboard', href: `${base}/scoreboard` },
-      { key: 'standings', label: 'Standings',  href: `${base}/standings` },
-      { key: 'settings',  label: 'Settings',   href: `${base}/settings` },
+      { key: 'my-team', label: 'My Team', href: myTeamHref },
+      { key: 'matchup', label: 'Matchup', href: matchupHref || `${base}/scoreboard` },
+      { key: 'scoreboard', label: 'Scoreboard', href: `${base}/scoreboard` },
+      { key: 'standings', label: 'Standings', href: `${base}/standings` },
+      { key: 'settings', label: 'Settings', href: `${base}/settings` },
     ];
     if (isCommissioner) tabs.push({ key: 'lm-tools', label: 'LM Tools', href: `${base}/lm-tools` });
     return tabs;
@@ -300,11 +289,29 @@ export default function Navbar() {
     return undefined;
   }, [pathname, leagueAddress, base]);
 
-  /* Home top bar */
   const onHome = !leagueAddress;
-  if (onHome) {
-    return (
-      <header className="sticky top-0 z-40 w-full border-b border-transparent bg-transparent backdrop-blur">
+  const onCreateOrJoin = /^\/(create|join)(?:\/|$)/.test(pathname);
+  const onMyTeam = activeKey === 'my-team';
+
+  // Visible pills
+  const showMyTeamPill = hydrated && leagueAddress && wallet && !onHome && !onCreateOrJoin && !onMyTeam;
+  const showScoreboardPill = hydrated && leagueAddress && wallet && onMyTeam; // <-- My Team page: show Scoreboard pill
+
+  // Always call hook to keep hook order stable
+  const { profile } = useTeamProfile(wallet as `0x${string}` | undefined, leagueAddress);
+  const walletShort = shortAddr(wallet);
+  const teamName = (profile?.teamName && profile.teamName.trim().length > 0)
+    ? profile.teamName.trim()
+    : (isCommissioner ? 'Commissioner' : (walletShort || '—'));
+  const logoSrc = profile?.logoUri ? toHttp(profile.logoUri) : (wallet ? generatedLogoFor(wallet) : '/placeholder-avatar.svg');
+
+  const item = 'block w-full px-3 py-1.5 text-[14px] rounded-md transition text-gray-200 hover:bg-white/6 hover:text-white';
+  const itemActive = 'bg-white/10 text-white';
+
+  return (
+    <>
+      {/* Home top bar */}
+      <header className={cx('sticky top-0 z-40 w-full border-b border-transparent backdrop-blur', onHome ? 'bg-transparent' : 'hidden')}>
         <div className="mx-auto max-w-6xl flex items-center justify-between px-4 sm:px-6 py-3">
           <Link href="/" className="flex items-center gap-2">
             <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={24} height={24} />
@@ -316,127 +323,97 @@ export default function Navbar() {
           </div>
         </div>
       </header>
-    );
-  }
 
-  /* Collapsed rail (TRANSPARENT) */
-  if (hydrated && collapsed) {
-    return (
-      <>
-        <aside
-          className="fixed left-0 top-0 bottom-0 z-40 text-gray-900 dark:text-white bg-transparent border-none"
-          style={{ width: SKINNY_W }}
-          aria-label="Collapsed sidebar"
-        >
-          <div className="flex h-full flex-col items-center py-3 gap-3">
-            <button
-              className="mt-1 inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/15 bg-white/10 text-white hover:text-gray-300 hover:bg-white/10"
-              aria-label="Open sidebar"
-              onClick={() => setCollapsed(false)}
-            >
-              <MenuIcon />
-            </button>
-            <Link href="/" title="Home">
-              <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={24} height={24} />
-            </Link>
-            <div className="mt-auto mb-2">
-              <ThemeToggleSmall />
-            </div>
-          </div>
-        </aside>
-      </>
-    );
-  }
-
-  /* Expanded sidebar (OPAQUE DARK GRAY) */
-  const item    = 'block w-full px-3 py-1.5 text-[14px] rounded-md transition text-gray-200 hover:bg-white/6 hover:text-white';
-  const itemActive = 'bg-white/10 text-white';
-
-  return (
-    <>
-      <aside
-        className="fixed left-0 top-0 bottom-0 z-50 text-white"
-        style={{ width: SIDEBAR_W, backgroundColor: '#1c2128' }} // dark gray
-        aria-label="Sidebar"
-      >
-        <div className="flex h-full flex-col px-4 pt-5 pb-3">
-          {/* Brand (flush with tabs) */}
-          <Link href="/" className="flex items-center gap-2 mb-3 pl-3">
-            <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={24} height={24} />
-            <span className={BRAND_TXT}>Hashmark</span>
-          </Link>
-
-          {/* Side-panel: two narrow rows (network, then account) */}
-          <div className="mb-2"><ConnectControls /></div>
-
-          {/* League title (pill, clickable) */}
-          <div className="pb-1">
-            <Link
-              href={base!}
-              className="block rounded-md px-3 py-1.5 text-[14px] font-extrabold tracking-tight text-white/90 hover:bg-white/10 hover:text-white"
-            >
-              {leagueName || leagueShort}
-            </Link>
-          </div>
-
-          {/* League dropdown (closed by default) */}
-          <button
-            className="mb-1 inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-[12px] tracking-wide uppercase text-white/75 hover:text-white hover:bg-white/6"
-            type="button"
-            onClick={() => { const el = document.getElementById('league-subnav'); if (el) el.classList.toggle('hidden'); }}
-          >
-            <span>League</span><ChevronDown className="opacity-80" />
-          </button>
-
-          <nav id="league-subnav" className="space-y-1 hidden mb-2">
-            {leagueMenu.map(m => (
-              <Link key={m.href} href={m.href} className={item}>{m.label}</Link>
-            ))}
-          </nav>
-
-          {/* Main tabs */}
-          <nav className="space-y-1">
-            {[
-              { key:'my-team',   label:'My Team',    href: leagueAddress && wallet ? `${base}/team/${wallet}` : `${base}/my-team` },
-              { key:'matchup',   label:'Matchup',    href: ( (matchupHref || `${base}/scoreboard`) as string) },
-              { key:'scoreboard',label:'Scoreboard', href: `${base}/scoreboard` },
-              { key:'standings', label:'Standings',  href: `${base}/standings` },
-              { key:'settings',  label:'Settings',   href: `${base}/settings` },
-              ...(isCommissioner ? [{ key:'lm-tools', label:'LM Tools', href:`${base}/lm-tools` }]:[])
-            ].map(t => {
-              const p = stripSlash(pathname);
-              const active = t.key === 'my-team'
-                ? (p === stripSlash(`${base}/my-team`) || p.startsWith(stripSlash(`${base}/team/`)))
-                : p.startsWith(stripSlash(t.href));
-              return (
-                <Link key={t.key} href={t.href} className={cx(item, active && itemActive)}>
-                  {t.label}
+      {/* Sidebar (collapsed/expanded) */}
+      {!onHome && (
+        <>
+          {hydrated && collapsed ? (
+            <aside className="fixed left-0 top-0 bottom-0 z-40 text-gray-900 dark:text-white bg-transparent border-none" style={{ width: SKINNY_W }} aria-label="Collapsed sidebar">
+              <div className="flex h-full flex-col items-center py-3 gap-3">
+                <button className="mt-1 inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/15 bg-white/10 text-white hover:text-gray-300 hover:bg-white/10" aria-label="Open sidebar" onClick={() => setCollapsed(false)}>
+                  <MenuIcon />
+                </button>
+                <Link href="/" title="Home">
+                  <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={24} height={24} />
                 </Link>
-              );
-            })}
-          </nav>
+                <div className="mt-auto mb-2"><ThemeToggleSmall /></div>
+              </div>
+            </aside>
+          ) : (
+            <aside className="fixed left-0 top-0 bottom-0 z-50 text-white" style={{ width: SIDEBAR_W, backgroundColor: '#1c2128' }} aria-label="Sidebar">
+              <div className="flex h-full flex-col px-4 pt-5 pb-3">
+                <Link href="/" className="flex items-center gap-2 mb-3 pl-3">
+                  <Image src="/avalanche-avax-logo.svg" alt="Hashmark Logo" width={24} height={24} />
+                  <span className={BRAND_TXT}>Hashmark</span>
+                </Link>
+                <div className="mb-2"><ConnectControls /></div>
+                <div className="pb-1">
+                  <Link href={base!} className="block rounded-md px-3 py-1.5 text-[14px] font-extrabold tracking-tight text-white/90 hover:bg-white/10 hover:text-white">
+                    {leagueName || leagueShort}
+                  </Link>
+                </div>
+                <button className="mb-1 inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-[12px] tracking-wide uppercase text-white/75 hover:text-white hover:bg-white/6" type="button" onClick={() => { const el = document.getElementById('league-subnav'); if (el) el.classList.toggle('hidden'); }}>
+                  <span>League</span><ChevronDown className="opacity-80" />
+                </button>
+                <nav id="league-subnav" className="space-y-1 hidden mb-2">
+                  {leagueMenu.map(m => <Link key={m.href} href={m.href} className={item}>{m.label}</Link>)}
+                </nav>
+                <nav className="space-y-1">
+                  {mainTabs.map(t => {
+                    const p = stripSlash(pathname);
+                    const active = t.key === 'my-team'
+                      ? (p === stripSlash(`${base}/my-team`) || p.startsWith(stripSlash(`${base}/team/`)))
+                      : p.startsWith(stripSlash(t.href));
+                    return (
+                      <Link key={t.key} href={t.href} className={cx(item, active && itemActive)}>
+                        {t.label}
+                      </Link>
+                    );
+                  })}
+                </nav>
+                <div className="mt-auto flex justify-end pt-2"><ThemeToggleSmall /></div>
+              </div>
+            </aside>
+          )}
 
-          <div className="mt-auto flex justify-end pt-2"><ThemeToggleSmall /></div>
-        </div>
-      </aside>
+{/* Outside chevron — only when sidebar is open */}
+{!collapsed && (
+  <button
+    onClick={() => setCollapsed(true)}
+    aria-label="Collapse sidebar"
+    className="fixed top-4 z-50 inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/15 bg-white/10 text-white hover:text-gray-300 hover:bg-white/10"
+    style={{ left: SIDEBAR_W + OUT_BTN_GAP }}
+  >
+    <ArrowLeft />
+  </button>
+)}
 
-      {/* Outside chevron — hover turns gray */}
-      <button
-        onClick={() => setCollapsed(true)}
-        aria-label="Collapse sidebar"
-        className="fixed top-4 z-50 inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/15 bg-white/10 text-white hover:text-gray-300 hover:bg-white/10"
-        style={{ left: SIDEBAR_W + OUT_BTN_GAP }}
-      >
-        <ArrowLeft />
-      </button>
 
-      {/* Tap-anywhere overlay on small screens */}
-      {overlayMode && (
-        <div
-          className="fixed top-0 right-0 bottom-0 z-40 bg-black/40 lg:hidden"
-          style={{ left: SIDEBAR_W }}
-          onClick={() => setCollapsed(true)}
-        />
+          {/* Overlay only when sidebar is open */}
+          {overlayMode && !collapsed && (
+            <div className="fixed top-0 right-0 bottom-0 z-40 bg-black/40 lg:hidden" style={{ left: SIDEBAR_W }} onClick={() => setCollapsed(true)} />
+          )}
+
+          {/* Pills */}
+          {showMyTeamPill && (
+            <Link href={myTeamHref} className="fixed right-4 top-4 z-[60] inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3 py-1.5 text-sm text-white hover:bg-white/15" title="Go to My Team">
+              <span className="inline-flex h-6 w-6 overflow-hidden rounded-full ring-1 ring-white/20">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={logoSrc} alt="Team Logo" className="h-6 w-6 object-cover" />
+              </span>
+              <span className="flex flex-col leading-tight">
+                <span className="max-w-[28ch] truncate font-medium">{teamName}</span>
+                <span className="opacity-80 text-[12px]">{shortAddr(wallet)}</span>
+              </span>
+            </Link>
+          )}
+
+          {showScoreboardPill && (
+            <Link href={`${base}/scoreboard`} className="fixed right-4 top-4 z-[60] inline-flex items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3 py-1.5 text-sm text-white hover:bg-white/15" title="Go to Scoreboard">
+              <span className="font-medium">Scoreboard</span>
+            </Link>
+          )}
+        </>
       )}
     </>
   );

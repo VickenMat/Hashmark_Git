@@ -2,313 +2,374 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo } from 'react';
 import { useParams } from 'next/navigation';
-import { useAccount, useReadContract, useReadContracts } from 'wagmi';
-import { useTeamProfile } from '@/lib/teamProfile';
+import { useAccount, useReadContracts } from 'wagmi';
+import { useMemo } from 'react';
 
-/* ---------------- ABIs ---------------- */
+/* ------------ ABI (subset of your League.sol) ------------ */
 const LEAGUE_ABI = [
-  { type: 'function', name: 'name',                stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
-  { type: 'function', name: 'commissioner',        stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
-  { type: 'function', name: 'createdAt',           stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
-  { type: 'function', name: 'buyInToken',          stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
-  { type: 'function', name: 'buyInAmount',         stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
-  { type: 'function', name: 'escrowBalances',      stateMutability: 'view', inputs: [], outputs: [{ type:'uint256' }, { type:'uint256' }] },
-  { type: 'function', name: 'teamCap',             stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
-  { type: 'function', name: 'requiresPassword',    stateMutability: 'view', inputs: [], outputs: [{ type: 'bool'    }] },
-  { type: 'function', name: 'getTeams',            stateMutability: 'view', inputs: [], outputs: [{
+  { type: 'function', name: 'name', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
+  { type: 'function', name: 'buyInAmount', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'buyInToken', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+  {
+    type: 'function',
+    name: 'getTeams',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{
       type: 'tuple[]',
       components: [
         { name: 'owner', type: 'address' },
-        { name: 'name',  type: 'string'  },
+        { name: 'name', type: 'string' },
       ],
-    }]
+    }],
   },
-  { type: 'function', name: 'getDraftSettings',    stateMutability: 'view', inputs: [], outputs: [
-      { type: 'uint8'   }, // draftType
-      { type: 'uint64'  }, // draftTimestamp
-      { type: 'uint8'   }, // orderMode
-      { type: 'bool'    }, // draftCompleted
-      { type: 'address[]' }, // manualOrder
-      { type: 'bool'    }, // draftPickTradingEnabled
-    ]
+  {
+    type: 'function',
+    name: 'getDraftSettings',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint8' }, { type: 'uint64' }, { type: 'uint8' }, { type: 'bool' }, { type: 'address[]' }],
   },
-  { type: 'function', name: 'hasPaid',             stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'bool' }] },
-  { type: 'function', name:'getTeamByAddress',     stateMutability:'view', inputs:[{type:'address'}], outputs:[{type:'string'}] },
+  { type: 'function', name: 'teamCap', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'commissioner', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+  { type: 'function', name: 'requiresPassword', stateMutability: 'view', inputs: [], outputs: [{ type: 'bool' }] },
+  { type: 'function', name: 'escrowBalances', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }, { type: 'uint256' }] },
+  { type: 'function', name: 'hasPaid', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'bool' }] },
+  { type: 'function', name: 'outstandingOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },
 ] as const;
 
-const SETTINGS_ABI = [
-  { type:'function', name:'getLeagueSettings', stateMutability:'view', inputs:[], outputs:[{ type:'tuple', components:[
-    { name:'leagueName', type:'string' },
-    { name:'leagueLogo', type:'string' },
-    { name:'numberOfTeams', type:'uint8' },
-    { name:'waiverType', type:'uint8' },
-    { name:'waiverBudget', type:'uint64' },
-    { name:'waiverMinBid', type:'uint64' },
-    { name:'waiverClearance', type:'uint8' },
-    { name:'waiversAfterDropDays', type:'uint8' },
-    { name:'tradeReviewDays', type:'uint8' },
-    { name:'tradeDeadlineWeek', type:'uint8' },
-    { name:'leagueType', type:'uint8' },
-    { name:'extraGameVsMedian', type:'bool' },
-    { name:'preventDropAfterKickoff', type:'bool' },
-    { name:'lockAllMoves', type:'bool' },
-  ]}]},
-] as const;
-
+const DraftTypeLabel = ['Snake', 'Salary Cap', 'Autopick', 'Offline'] as const;
+const OrderModeLabel = ['Random', 'Manual'] as const;
 const ZERO = '0x0000000000000000000000000000000000000000';
 
 /* ---------------- helpers ---------------- */
-function shortAddr(a?: string) { if (!a) return '—'; return `${a.slice(0,6)}…${a.slice(-4)}`; }
-function fmtDateSecs(s?: bigint) { const n = Number(s ?? 0n); if (!n) return '—'; return new Date(n * 1000).toLocaleString(); }
-function initials(n?: string){ const s=(n||'').trim(); if(!s) return 'TM'; const p=s.split(/\s+/); return ((p[0]?.[0]??'') + (p[1]?.[0]??'')).toUpperCase() || 'TM'; }
-const num = (v: unknown): number | undefined => { const n = Number(v); return Number.isFinite(n) ? n : undefined; };
+function formatAvax(wei?: bigint) {
+  if (wei === undefined) return '—';
+  if (wei === 0n) return 'Free';
+  const whole = wei / 10n ** 18n;
+  const frac = (wei % 10n ** 18n) + 10n ** 18n;
+  const fracStr = frac.toString().slice(1).slice(0, 4);
+  return `${whole}.${fracStr} AVAX`;
+}
+function truncateMiddle(s?: string, left = 6, right = 4) {
+  if (!s) return '—';
+  if (s.length <= left + right + 3) return s;
+  return `${s.slice(0, left)}…${s.slice(-right)}`;
+}
+function num(x: unknown): number | undefined {
+  if (x === null || x === undefined) return undefined;
+  const n = Number(x as any);
+  return Number.isFinite(n) ? n : undefined;
+}
 
-function CopyBtn({ value }: { value?: string }) {
-  if (!value) return null;
+/* ---------------- page ---------------- */
+export default function LeagueSettings() {
+  const { address } = useParams<{ address: `0x${string}` }>();
+  const { address: wallet } = useAccount();
+
+  // Primary reads (same set you showed, safe to keep)
+  const primary = useReadContracts({
+    contracts: [
+      { abi: LEAGUE_ABI, address, functionName: 'name' },
+      { abi: LEAGUE_ABI, address, functionName: 'buyInAmount' },
+      { abi: LEAGUE_ABI, address, functionName: 'buyInToken' },
+      { abi: LEAGUE_ABI, address, functionName: 'getTeams' },
+      { abi: LEAGUE_ABI, address, functionName: 'getDraftSettings' },
+      { abi: LEAGUE_ABI, address, functionName: 'teamCap' },
+      { abi: LEAGUE_ABI, address, functionName: 'commissioner' },
+      { abi: LEAGUE_ABI, address, functionName: 'requiresPassword' },
+      { abi: LEAGUE_ABI, address, functionName: 'escrowBalances' },
+      ...(wallet ? [{ abi: LEAGUE_ABI, address, functionName: 'hasPaid' as const, args: [wallet] }] : []),
+      ...(wallet ? [{ abi: LEAGUE_ABI, address, functionName: 'outstandingOf' as const, args: [wallet] }] : []),
+    ],
+  });
+
+  const name        = primary.data?.[0]?.result as string | undefined;
+  const buyIn       = primary.data?.[1]?.result as bigint | undefined;
+  const buyInToken  = primary.data?.[2]?.result as `0x${string}` | undefined;
+  const teams       = (primary.data?.[3]?.result as { owner: `0x${string}`; name: string }[] | undefined) ?? [];
+  const draftTuple  =
+    (primary.data?.[4]?.result as [number, bigint, number, boolean, `0x${string}`[]] | undefined) ??
+    (undefined as unknown as [number, bigint, number, boolean, `0x${string}`[]]);
+  const cap         = Number((primary.data?.[5]?.result as bigint | undefined) ?? 0n);
+  const commish     = primary.data?.[6]?.result as `0x${string}` | undefined;
+  const passwordReq = Boolean(primary.data?.[7]?.result as boolean | undefined);
+  const escrow      = primary.data?.[8]?.result as readonly [bigint, bigint] | undefined;
+  const youPaid     = wallet ? (primary.data?.[9]?.result as boolean | undefined) : undefined;
+  const youOweWei   = wallet ? (primary.data?.[10]?.result as bigint | undefined) : undefined;
+
+  const draftTypeIdx = draftTuple?.[0] ?? 0;
+  const draftTs      = Number(draftTuple?.[1] ?? 0n);
+  const orderModeIdx = draftTuple?.[2] ?? 0;
+  const draftDone    = Boolean(draftTuple?.[3] ?? false);
+  const manualOrder  = (draftTuple?.[4] ?? []) as `0x${string}`[];
+
+  const filled  = teams.length; // getTeams() returns only filled teams
+  const isFree  = (buyIn ?? 0n) === 0n;
+
+  // Per-team hasPaid()
+  const teamHasPaidReads = useMemo(
+    () => teams.map(t => ({ abi: LEAGUE_ABI, address, functionName: 'hasPaid' as const, args: [t.owner] })),
+    [address, teams]
+  );
+  const teamPaidRes = useReadContracts({
+    contracts: teamHasPaidReads,
+    query: { enabled: teamHasPaidReads.length > 0 },
+  });
+  const paidCount = useMemo(
+    () => (teamPaidRes.data ? teamPaidRes.data.reduce((n, r) => n + ((r?.result as boolean) ? 1 : 0), 0) : 0),
+    [teamPaidRes.data]
+  );
+
+  const draftStatus = draftDone ? 'Completed' : draftTs === 0 ? 'Not scheduled' : 'Scheduled';
+  const paymentsPct = isFree ? 100 : (filled > 0 ? Math.round((paidCount / filled) * 100) : 0);
+  const fullnessPct = cap > 0 ? Math.round((filled / cap) * 100) : 0;
+
+  const copy = (txt: string) => navigator.clipboard.writeText(txt);
+
+  // Commissioner check
+  const isCommissioner = !!(wallet && commish && wallet.toLowerCase() === commish.toLowerCase());
+
+  /* ---------------- Derived "LM" settings (read-only) ----------------
+     If/when you add a real LM struct read, just assign it to `lm`.
+     Keeping this optional avoids crashes and fixes ?? + || precedence. */
+  const lm: Partial<{
+    leagueName: string;
+    numberOfTeams: number | bigint;
+    waiverType: number | bigint;
+    waiverBudget: number | bigint;
+    waiverMinBid: number | bigint;
+  }> | undefined = undefined; // <-- replace when you have a contract read
+
+  const lmLeagueName: string = (lm?.leagueName ?? '') as string;
+
+  // Prefer explicit value from lm.numberOfTeams; else fall back to teams.length; if final is falsy -> '—'
+  const lmTeams: string | number = ((num(lm?.numberOfTeams) ?? teams.length) || '—');
+
+  const waiverTypeIndex = (num(lm?.waiverType) ?? 0);
+  const WAIVER_TYPE_LABELS: Record<number, string> = { 0: 'Rolling', 1: 'Reverse standings', 2: 'FAAB' };
+  const lmWaiverType: string = WAIVER_TYPE_LABELS[waiverTypeIndex] ?? '—';
+
+  const lmFaabBudget = Number(lm?.waiverBudget ?? 0);
+  const lmMinBid = Number(lm?.waiverMinBid ?? 0);
+
+  /* ---------------- render ---------------- */
   return (
-    <button
-      onClick={() => navigator.clipboard.writeText(value)}
-      className="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-gray-200 hover:border-fuchsia-400/60 transition"
-      title="Copy to clipboard"
-    >
-      Copy
-    </button>
+    <main className="min-h-screen bg-gradient-to-br from-[#0b0b14] to-black text-white px-6 py-10">
+      <div className="mx-auto max-w-4xl">
+        {/* Header */}
+        <h1 className="text-center text-4xl font-extrabold tracking-tight">{name || 'League Settings'}</h1>
+        <div className="mt-1 flex items-center justify-center gap-2 text-xs sm:text-sm text-gray-300">
+          <code className="font-mono break-all">{address}</code>
+          <button
+            onClick={() => copy(address)}
+            className="rounded-md border border-white/10 bg-white/10 px-2 py-1 hover:bg-white/15"
+          >
+            Copy
+          </button>
+        </div>
+
+        {/* Quick Stats */}
+        <div className="mt-7 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <SmallStat title="Buy-In" value={formatAvax(buyIn)} centered />
+          <SmallStat title="Teams" value={`${filled}/${cap || '—'}`} centered />
+          <SmallStat title="Draft Status" value={draftStatus} centered />
+        </div>
+
+        {/* Progress */}
+        <div className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2">
+          <ProgressCard
+            title="Payments"
+            rightLabel={isFree ? 'Free' : `${paidCount}/${filled} (${paymentsPct}%)`}
+            pct={isFree ? 100 : paymentsPct}
+            barClass={isFree ? 'bg-emerald-400' : 'bg-gradient-to-r from-emerald-400 to-emerald-500'}
+          />
+          {!draftDone && (
+            <ProgressCard
+              title="League Fullness"
+              rightLabel={`${filled}/${cap} (${fullnessPct}%)`}
+              pct={fullnessPct}
+              barClass="bg-gradient-to-r from-sky-400 to-blue-500"
+            />
+          )}
+        </div>
+
+        {/* Draft settings (centered) */}
+        <section className="mt-8 rounded-2xl border border-white/10 bg-white/[0.03] p-6 text-center">
+          <h2 className="mb-3 text-lg font-bold">Draft Settings</h2>
+          <div className="text-sm text-gray-300 space-y-1">
+            <div><span className="text-gray-400">Type: </span>{DraftTypeLabel[draftTypeIdx] ?? '—'}</div>
+            <div><span className="text-gray-400">Order: </span>{OrderModeLabel[orderModeIdx] ?? '—'}</div>
+            <div>
+              <span className="text-gray-400">Date &amp; Time: </span>
+              {draftTs ? new Date(draftTs * 1000).toLocaleString() : '—'}
+            </div>
+            {orderModeIdx === 1 && manualOrder.length > 0 && (
+              <div className="pt-2">
+                <span className="text-gray-400">Manual Order:</span>
+                <div className="mt-2 inline-block text-left">
+                  <ol className="ml-6 list-decimal space-y-1">
+                    {manualOrder.map((addr, i) => {
+                      const t = teams.find(tt => tt.owner.toLowerCase() === addr.toLowerCase());
+                      return <li key={`${addr}-${i}`}>{t?.name || addr}</li>;
+                    })}
+                  </ol>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* League info + Your status */}
+        <section className="mt-6 grid grid-cols-1 gap-5 sm:grid-cols-2">
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+            <h3 className="mb-3 text-center font-bold">League Info</h3>
+            <div className="space-y-2 text-sm text-gray-300">
+              <Row label="Commissioner" labelClass="w-24">
+                <span className="font-mono">{truncateMiddle(commish)}</span>
+                {commish && (
+                  <button
+                    onClick={() => copy(commish)}
+                    className="ml-2 rounded border border-white/10 bg-white/10 px-2 py-0.5 text-xs hover:bg-white/15"
+                  >
+                    Copy
+                  </button>
+                )}
+              </Row>
+              <Row label="Password" labelClass="w-24"><span>{passwordReq ? 'Required' : 'Not required'}</span></Row>
+              <Row label="Buy-In token" labelClass="w-24"><span>{(buyInToken ?? ZERO) === ZERO ? 'AVAX' : buyInToken}</span></Row>
+              <Row label="Escrow (native)" labelClass="w-24"><span>{formatAvax(escrow?.[0])}</span></Row>
+              {(buyInToken ?? ZERO) !== ZERO && (
+                <Row label="Escrow (token)" labelClass="w-24"><span>{`${escrow?.[1] ?? 0n} wei`}</span></Row>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+            <h3 className="mb-3 text-center font-bold">Your Status</h3>
+            {wallet ? (
+              <div className="space-y-2 text-sm text-gray-300">
+                <Row label="Wallet" labelClass="w-24">
+                  <span className="font-mono">{truncateMiddle(wallet)}</span>
+                  <button
+                    onClick={() => copy(wallet)}
+                    className="ml-2 rounded border border-white/10 bg-white/10 px-2 py-0.5 text-xs hover:bg-white/15"
+                  >
+                    Copy
+                  </button>
+                </Row>
+                <Row label="Membership" labelClass="w-24">
+                  <span>{teams.some(t => t.owner.toLowerCase() === wallet.toLowerCase()) ? 'Member' : '—'}</span>
+                </Row>
+                <Row label="Payment" labelClass="w-24">
+                  <span>
+                    {isFree ? 'Free' : youPaid ? 'Paid' : youOweWei && youOweWei > 0n ? `Owes ${formatAvax(youOweWei)}` : '—'}
+                  </span>
+                </Row>
+              </div>
+            ) : (
+              <p className="text-center text-gray-400">Connect your wallet to see your status.</p>
+            )}
+          </div>
+        </section>
+
+        {/* Derived LM Settings block (read-only preview) */}
+        <section className="mt-6 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+          <h3 className="mb-3 text-center font-bold">League Manager Settings</h3>
+          <div className="space-y-2 text-sm text-gray-300">
+            <Row label="League Name" labelClass="w-36"><span>{lmLeagueName || '—'}</span></Row>
+            <Row label="Number of Teams" labelClass="w-36"><span>{lmTeams}</span></Row>
+            <Row label="Waiver Type" labelClass="w-36"><span>{lmWaiverType}</span></Row>
+            <Row label="FAAB Budget" labelClass="w-36"><span>{lmFaabBudget ? `${lmFaabBudget}` : '—'}</span></Row>
+            <Row label="Min Bid" labelClass="w-36"><span>{lmMinBid ? `${lmMinBid}` : '—'}</span></Row>
+          </div>
+        </section>
+
+        {/* Actions */}
+        <div className="mt-8 flex justify-center gap-3">
+          <Link
+            href={`/league/${address}/my-team`}
+            className="rounded-xl bg-purple-600 hover:bg-purple-700 px-4 py-2 font-semibold"
+          >
+            Go to My Team
+          </Link>
+
+          {isCommissioner ? (
+            <Link
+              href={`/league/${address}/draft-settings`}
+              className="rounded-xl border border-purple-500/60 hover:border-purple-400 px-4 py-2 font-semibold text-purple-200"
+            >
+              Edit Draft Settings
+            </Link>
+          ) : (
+            <Link
+              href={`/league/${address}/members`}
+              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 font-semibold hover:border-white/25"
+            >
+              League Members
+            </Link>
+          )}
+
+          <a
+            href={`https://testnet.snowtrace.io/address/${address}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 font-semibold text-blue-300 hover:border-blue-400"
+          >
+            Snowtrace →
+          </a>
+        </div>
+      </div>
+    </main>
   );
 }
 
-function InfoBox({ label, value, full, canCopy }:{
-  label:string; value:React.ReactNode; full?:string; canCopy?:boolean;
-}) {
+/* ---------------- presentational helpers ---------------- */
+function SmallStat({ title, value, centered = false }: { title: string; value: string; centered?: boolean }) {
   return (
-    <div className="rounded-xl border border-white/10 bg-gradient-to-b from-white/[0.05] to-white/[0.02] p-4 text-center">
-      <div className="text-[10px] font-semibold tracking-[0.2em] text-gray-400">{label}</div>
-      <div className="mt-1 flex items-center justify-center gap-2">
-        <div className="min-w-0 font-medium truncate" title={typeof full === 'string' ? full : undefined}>
-          {value}
-        </div>
-        {canCopy && <CopyBtn value={full} />}
-      </div>
+    <div className={`rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3 ${centered ? 'text-center' : ''}`}>
+      <div className="text-xs text-gray-400">{title}</div>
+      <div className="text-base font-bold">{value}</div>
     </div>
   );
 }
-
-function MyTeamPill({ href, name, logo, wallet }:{
-  href:string; name?:string; logo?:string; wallet?:`0x${string}`|undefined;
+function Row({
+  label,
+  children,
+  labelClass = 'w-28',
+}: {
+  label: string;
+  children: React.ReactNode;
+  labelClass?: string;
 }) {
-  const display = name?.trim() || 'My Team';
   return (
-    <Link
-      href={href}
-      className="inline-flex items-center gap-3 rounded-2xl border border-white/10 bg-gradient-to-br from-white/[0.06] to-white/[0.02] px-3 py-2 shadow-lg ring-1 ring-black/20 hover:border-fuchsia-400/60 transition"
-      title="Go to My Team"
-    >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      {logo ? (
-        <img src={logo} alt={display} className="h-9 w-9 rounded-xl object-cover ring-1 ring-white/15"/>
-      ) : (
-        <div className="h-9 w-9 rounded-xl bg-white/10 grid place-items-center text-xs font-bold">
-          {initials(display)}
-        </div>
-      )}
-      <div className="leading-tight text-left">
-        <div className="font-semibold text-white">{display}</div>
-        <div className="text-[11px] font-mono text-gray-300">{shortAddr(wallet)}</div>
-      </div>
-    </Link>
+    <div className="flex flex-wrap items-center gap-2">
+      <span className={`${labelClass} shrink-0 text-gray-400`}>{label}</span>
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
   );
 }
-
-/* Simple labels (no numeric codes) */
-function draftTypeLabel(code?: number) {
-  return ({0:'Snake',1:'Linear',2:'Auction'} as Record<number,string>)[Number(code ?? -1)] ?? '—';
-}
-function orderModeLabel(code?: number) {
-  return ({0:'Randomize',1:'Manual',2:'Reverse Standings'} as Record<number,string>)[Number(code ?? -1)] ?? '—';
-}
-const WAIVER_TYPE: Record<number,string> = { 0: 'Rolling', 1: 'Reverse standings', 2: 'FAAB' };
-const LEAGUE_TYPE: Record<number,string> = { 0: 'Redraft', 1: 'Keeper', 2: 'Dynasty' };
-
-function formatAvax2dp(wei?: bigint) {
-  if (wei === undefined) return '—';
-  const n = Number(wei) / 1e18;
-  return `${n.toFixed(2)} AVAX`;
-}
-
-/* ---------------- Page ---------------- */
-export default function LeagueSettingsView() {
-  const { address: league } = useParams<{ address: `0x${string}` }>();
-  const { address: wallet } = useAccount();
-
-  // Core reads
-  const { data: leagueName }   = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'name' });
-  const { data: commissioner } = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'commissioner' });
-  const { data: createdAt }    = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'createdAt' });
-  const { data: buyInToken }   = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'buyInToken' });
-  const { data: buyInAmount }  = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'buyInAmount' });
-  const { data: escrowTuple }  = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'escrowBalances' });
-  const { data: teamCapRaw }   = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'teamCap' });
-  const { data: draft }        = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'getDraftSettings' });
-  const { data: teamsRaw }     = useReadContract({ abi: LEAGUE_ABI, address: league, functionName: 'getTeams' });
-
-  // My team pill (profile)
-  const { data: onChainTeamName } = useReadContract({
-    abi: LEAGUE_ABI, address: league, functionName: 'getTeamByAddress',
-    args: [wallet ?? ZERO], query: { enabled: !!wallet }
-  });
-  const prof = useTeamProfile(league, wallet, { name: onChainTeamName as string });
-  const displayName = (prof.name || (onChainTeamName as string) || '').trim() || undefined;
-
-  // LM settings (read-only mirror)
-  const { data: s } = useReadContract({
-    abi: SETTINGS_ABI, address: league, functionName: 'getLeagueSettings'
-  });
-  const lm = s as any;
-
-  const isNative = ((buyInToken as string | undefined)?.toLowerCase() ?? '') === ZERO;
-  const escrowNative = (escrowTuple as readonly [bigint, bigint] | undefined)?.[0];
-
-  const teamCap = (() => { try { return Number(teamCapRaw as bigint); } catch { return undefined; } })();
-
-  const draftType  = Number((draft as any)?.[0] ?? undefined);
-  const draftTs    = BigInt((draft as any)?.[1] ?? 0n);
-  const orderMode  = Number((draft as any)?.[2] ?? undefined);
-  const draftDone  = Boolean((draft as any)?.[3] ?? false);
-
-  const teams = useMemo(() => {
-    const list = (teamsRaw as unknown as { owner:`0x${string}`; name:string }[] | undefined) ?? [];
-    return list.filter(t => t.owner && t.owner !== ZERO);
-  }, [teamsRaw]);
-
-  const paidRes = useReadContracts({
-    contracts: teams.map(t => ({
-      abi: LEAGUE_ABI, address: league, functionName: 'hasPaid' as const, args: [t.owner],
-    })),
-    query: { enabled: teams.length > 0 },
-  });
-  const paidCount = useMemo(() => {
-    if (!teams.length) return 0;
-    let n = 0;
-    for (let i=0;i<teams.length;i++) {
-      if ((paidRes.data?.[i]?.result as boolean | undefined) === true) n++;
-    }
-    return n;
-  }, [teams.length, paidRes.data]);
-
-  // Derived LM settings (read-only)
-  const lmLeagueName   = (lm?.leagueName ?? '') as string;
-  const lmTeams        = num(lm?.numberOfTeams) ?? teams.length || '—';
-  const lmWaiverType   = ({0:'Rolling',1:'Reverse standings',2:'FAAB'} as Record<number,string>)[num(lm?.waiverType) ?? 0] ?? '—';
-  const lmFaabBudget   = Number(lm?.waiverBudget ?? 0);
-  const lmMinBid       = Number(lm?.waiverMinBid ?? 0);
-  const lmWAfterDrop   = num(lm?.waiversAfterDropDays) ?? 0;
-  const lmTradeReview  = num(lm?.tradeReviewDays) ?? 0;
-  const lmDeadlineWk   = num(lm?.tradeDeadlineWeek) ?? 0;
-  const lmType         = ({0:'Redraft',1:'Keeper',2:'Dynasty'} as Record<number,string>)[num(lm?.leagueType) ?? 0] ?? '—';
-  const lmVsMedian     = Boolean(lm?.extraGameVsMedian);
-  const lmNoDropAfter  = Boolean(lm?.preventDropAfterKickoff);
-  const lmLockMoves    = Boolean(lm?.lockAllMoves);
-
-  const totalTeamsForPayments = teamCap ?? teams.length;
-
-  const headerTitle = `${String(leagueName || lmLeagueName || 'League')} Settings`;
-
+function ProgressCard({
+  title,
+  rightLabel,
+  pct,
+  barClass,
+}: {
+  title: string;
+  rightLabel: string;
+  pct: number;
+  barClass: string;
+}) {
   return (
-    <main className="min-h-screen bg-gradient-to-br from-gray-950 via-[#0b0b14] to-black text-white px-6 py-10">
-      <div className="mx-auto w-full max-w-6xl space-y-8 text-center">
-        {/* Header: centered; title is "[League Name] Settings" */}
-        <header className="flex items-start justify-between">
-          <div className="flex-1" />
-          <h1 className="text-3xl font-extrabold text-center flex-1">{headerTitle}</h1>
-          <div className="flex-1 flex justify-end">
-            <MyTeamPill href={`/league/${league}/team`} name={displayName} logo={prof.logo} wallet={wallet} />
-          </div>
-        </header>
-
-        {/* Info bar: MY TEAM / LEAGUE ADDRESS / COMMISSIONER */}
-        <section className="rounded-2xl border border-white/10 bg-[radial-gradient(120%_120%_at_0%_0%,rgba(250,116,255,0.08),transparent_60%),radial-gradient(120%_120%_at_100%_0%,rgba(123,97,255,0.08),transparent_60%)] p-5 shadow-inner">
-          <div className="grid gap-4 sm:grid-cols-3">
-            <InfoBox
-              label="MY TEAM"
-              value={<span className="font-mono text-sm">{shortAddr(wallet)}</span>}
-              full={wallet as string}
-              canCopy
-            />
-            <InfoBox
-              label="LEAGUE ADDRESS"
-              value={<span className="font-mono text-sm">{shortAddr(league)}</span>}
-              full={league}
-              canCopy
-            />
-            <InfoBox
-              label="COMMISSIONER"
-              value={<span className="font-mono text-sm">{shortAddr(commissioner as string)}</span>}
-              full={commissioner as string}
-              canCopy
-            />
-          </div>
-        </section>
-
-        {/* Summary tiles stay as before */}
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <InfoBox label="CREATED" value={fmtDateSecs(createdAt as bigint)} />
-          <InfoBox label="TEAMS JOINED / CAP" value={`${teams.length}${teamCap ? ` / ${teamCap}` : ''}`} />
-          <InfoBox label="LEAGUE TYPE" value={lmType} />
-          <InfoBox label="DRAFT" value={`${draftTypeLabel(Number(draftType))}${draftDone ? ' • Completed' : ''}`} />
-        </section>
-
-        {/* Financials (centered, 2dp, no token escrow box) */}
-        <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
-          <h2 className="text-lg font-semibold mb-4">Financials</h2>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <InfoBox label="Buy-In" value={isNative ? formatAvax2dp(buyInAmount as bigint) : `${String(buyInAmount ?? 0)} (ERC-20)`} />
-            <InfoBox label="Buy-In Token" value={isNative ? 'Native (AVAX)' : (buyInToken as string || '—')} full={isNative ? undefined : (buyInToken as string)} canCopy={!isNative} />
-            <InfoBox label="Escrow (Native)" value={formatAvax2dp(escrowNative)} />
-            <InfoBox label="Payments Progress" value={`${paidCount}/${totalTeamsForPayments} paid`} />
-          </div>
-        </section>
-
-        {/* League Settings — responsive grid: 2 cols on half, 3 cols on full */}
-        <section className="rounded-2xl border border-white/10 bg-white/[0.03] p-6">
-          <h2 className="text-lg font-semibold mb-4">League Settings</h2>
-
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <InfoBox label="League Name" value={String(lmLeagueName || leagueName || '—')} />
-            <InfoBox label="Number of Teams" value={String(lmTeams)} />
-            <InfoBox label="League Type" value={lmType} />
-
-            <InfoBox label="Waiver Type" value={lmWaiverType} />
-            {/* Only show FAAB details when FAAB is the waiver type */}
-            {lmWaiverType === 'FAAB' && (
-              <>
-                <InfoBox label="FAAB Budget ($)" value={String(lmFaabBudget)} />
-                <InfoBox label="Minimum Bid ($)" value={String(lmMinBid)} />
-              </>
-            )}
-
-            <InfoBox label="Time on Waivers After Cut" value={lmWAfterDrop === 0 ? 'None' : `${lmWAfterDrop} day${lmWAfterDrop===1?'':'s'}`} />
-            <InfoBox label="Trade Review" value={lmTradeReview === 0 ? 'None' : `${lmTradeReview} day${lmTradeReview===1?'':'s'}`} />
-            <InfoBox label="Trade Deadline" value={lmDeadlineWk === 0 ? 'None' : `Week ${lmDeadlineWk}`} />
-
-            <InfoBox label="Extra Game vs Median" value={lmVsMedian ? 'On' : 'Off'} />
-            <InfoBox label="Prevent Drop After Kickoff" value={lmNoDropAfter ? 'On' : 'Off'} />
-            <InfoBox label="Lock All Moves" value={lmLockMoves ? 'On' : 'Off'} />
-          </div>
-        </section>
-
-        {/* For commissioner, keep the CTA; otherwise, no “read-only” text */}
-        {wallet && commissioner && wallet.toLowerCase() === (commissioner as string).toLowerCase() ? (
-          <div className="flex justify-center">
-            <Link
-              href={`/league/${league}/lm-tools`}
-              className="rounded-2xl border border-fuchsia-400/50 bg-fuchsia-500/10 px-4 py-2 text-sm font-semibold text-fuchsia-200 hover:border-fuchsia-400"
-            >
-              Open LM Tools (edit on-chain)
-            </Link>
-          </div>
-        ) : null}
+    <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+      <div className="mb-1 flex items-center justify-between text-xs text-gray-400">
+        <span>{title}</span>
+        <span>{rightLabel}</span>
       </div>
-    </main>
+      <div className="h-2 w-full rounded-full bg-white/10">
+        <div className={`h-2 rounded-full ${barClass}`} style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
+      </div>
+    </div>
   );
 }

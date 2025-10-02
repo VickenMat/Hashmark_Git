@@ -66,6 +66,7 @@ export default function CreateLeaguePage() {
     return selected;
   }, [chainId]);
 
+  // Price fetch (best-effort)
   useEffect(() => {
     let id: ReturnType<typeof setTimeout> | undefined;
     (async function loop() {
@@ -96,8 +97,8 @@ export default function CreateLeaguePage() {
   ): Promise<`0x${string}` | undefined> {
     if (!publicClient || !factory) return;
 
-    // 1) parse from receipt logs
-    if (receipt?.logs?.length) {
+    // 1) parse from receipt logs (best case)
+    if (receipt?.logs && Array.isArray(receipt.logs) && receipt.logs.length) {
       try {
         const parsed = parseEventLogs({
           abi: LEAGUE_FACTORY_ABI as any,
@@ -109,7 +110,7 @@ export default function CreateLeaguePage() {
           const args = parsed[0].args as any;
           const candidate = (args.leagueAddress ||
             args.league ||
-            args.leagueAddr) as `0x${string}`;
+            args.leagueAddr) as `0x${string}` | undefined;
           if (candidate) return candidate;
         }
       } catch {}
@@ -118,7 +119,7 @@ export default function CreateLeaguePage() {
     // 2) scan recent logs on the factory and validate by reading commissioner
     try {
       const latest = await publicClient.getBlockNumber();
-      const fromBlock = latest > 1200n ? latest - 1200n : 0n;
+      const fromBlock = latest > 2000n ? latest - 2000n : 0n;
       const rawLogs = await publicClient.getLogs({
         address: factory,
         fromBlock,
@@ -217,30 +218,36 @@ export default function CreateLeaguePage() {
     setSubmitting(true);
 
     try {
-      // 1) send tx
-      let txHash = await writeContractAsync({
+      // 1) simulate → send tx (more reliable than direct write)
+      const sim = await publicClient!.simulateContract({
         address: factory,
         abi: LEAGUE_FACTORY_ABI,
         functionName: 'createLeague',
         args: [trimmedName, buyInAmount, BigInt(teamCount)],
         account: address,
       });
+      let txHash = await writeContractAsync(sim.request);
 
-      // 2) wait for receipt robustly (handles speed-ups, timeouts)
+      // 2) wait for receipt (do not call getTransactionReceipt directly)
       let receipt: any | undefined;
       try {
         receipt = await publicClient!.waitForTransactionReceipt({
           hash: txHash as Hex,
+          confirmations: 1,
           timeout: 180_000,        // 3 minutes
           pollingInterval: 1500,
-          includeReplaced: 'confirmed',
           onReplaced: (r) => {
-            txHash = r.transaction.hash as Hex;
+            // user sped up or canceled → continue with the new hash if confirmed
+            if (r?.reason === 'replaced' || r?.reason === 'repriced') {
+              txHash = r.transaction.hash as Hex;
+            }
           },
         });
       } catch (e: any) {
-        // If it’s a timeout, we’ll try to recover by scanning logs below
-        if (e?.name !== 'WaitForTransactionReceiptTimeoutError') throw e;
+        // If the RPC is slow to index, fall back to scanning logs
+        if (e?.name !== 'WaitForTransactionReceiptTimeoutError') {
+          throw e;
+        }
       }
 
       // 3) resolve new league address (receipt → logs → getLeagues)
@@ -273,19 +280,20 @@ export default function CreateLeaguePage() {
         return;
       }
 
-      // 5) optional: set join password
+      // 5) optional: set join password (simulate → write → wait)
       if (wantsPassword) {
         const pwdHash = keccak256(toBytes(pw)) as Hex;
-        const sim = await publicClient!.simulateContract({
+        const simPwd = await publicClient!.simulateContract({
           address: newLeague,
           abi: SETPW_BYTES32_ABI,
           functionName: 'setJoinPassword',
           args: [pwdHash],
           account: address,
         });
-        const pwdTx = await writeContractAsync(sim.request);
+        const pwdTx = await writeContractAsync(simPwd.request);
         await publicClient!.waitForTransactionReceipt({
           hash: pwdTx as Hex,
+          confirmations: 1,
           timeout: 90_000,
           pollingInterval: 1500,
         });
@@ -410,6 +418,7 @@ export default function CreateLeaguePage() {
                 color: isFree ? '#0b0b14' : EGGSHELL,
                 border: `1px solid ${isFree ? ZIMA : 'rgba(255,255,255,.15)'}`,
               }}
+              disabled={submitting}
             >
               Free
             </button>
@@ -422,6 +431,7 @@ export default function CreateLeaguePage() {
                 color: !isFree ? '#0b0b14' : EGGSHELL,
                 border: `1px solid ${!isFree ? ZIMA : 'rgba(255,255,255,.15)'}`,
               }}
+              disabled={submitting}
             >
               Buy-In
             </button>
@@ -447,6 +457,7 @@ export default function CreateLeaguePage() {
                   borderColor: ZIMA,
                   background: 'rgba(255,255,255,.04)',
                 }}
+                disabled={submitting}
               />
             </div>
           </div>
@@ -472,6 +483,7 @@ export default function CreateLeaguePage() {
                       : 'rgba(255,255,255,.04)',
                   color: EGGSHELL,
                 }}
+                disabled={submitting}
               >
                 {n}
               </button>
@@ -497,6 +509,7 @@ export default function CreateLeaguePage() {
                   wantsPassword ? ZIMA : 'rgba(255,255,255,.15)'
                 }`,
               }}
+              disabled={submitting}
             >
               {wantsPassword ? 'Require Password ✓' : 'Require Password'}
             </button>
@@ -510,6 +523,7 @@ export default function CreateLeaguePage() {
                 background: 'rgba(255,255,255,.06)',
                 color: EGGSHELL,
               }}
+              disabled={submitting}
             >
               ?
             </button>
@@ -535,6 +549,7 @@ export default function CreateLeaguePage() {
                   borderColor: ZIMA,
                   background: 'rgba(255,255,255,.04)',
                 }}
+                disabled={submitting}
               />
               <button
                 type="button"
@@ -545,6 +560,7 @@ export default function CreateLeaguePage() {
                   background: 'rgba(255,255,255,.05)',
                   color: EGGSHELL,
                 }}
+                disabled={submitting}
               >
                 {showPassword ? 'Hide' : 'Show'}
               </button>

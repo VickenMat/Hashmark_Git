@@ -1,0 +1,16 @@
+position,name,team,slot,score,proj,opp,time,rst%,strt%
+QB,Patrick Mahomes,KC,starter,28.7,26.3,CIN,4:25 PM,100%,99%
+RB,Christian McCaffrey,SF,starter,21.4,19.8,SEA,4:05 PM,100%,100%
+RB,Breece Hall,NYJ,starter,18.3,17.1,BUF,1:00 PM,98%,86%
+WR,Justin Jefferson,MIN,starter,23.2,20.0,GB,1:00 PM,100%,99%
+WR,Deebo Samuel,SF,starter,14.6,15.2,SEA,4:05 PM,99%,76%
+TE,Travis Kelce,KC,starter,17.8,18.5,CIN,4:25 PM,100%,99%
+WR,Mike Evans,TB,starter,15.1,14.3,ATL,1:00 PM,98%,70%
+D/ST,49ers Defense,SF,starter,10.2,11.1,DAL,1:00 PM,92%,84%
+K,Justin Tucker,BAL,starter,12.4,13.1,PIT,8:20 PM,98%,89%
+RB,Isiah Pacheco,KC,bench,11.9,12.0,CIN,4:25 PM,94%,58%
+WR,Brandon Aiyuk,SF,bench,13.7,14.0,SEA,4:05 PM,95%,61%
+WR,DK Metcalf,SEA,bench,12.5,13.4,SF,4:05 PM,97%,63%
+TE,George Kittle,SF,bench,13.9,13.0,SEA,4:05 PM,98%,72%
+QB,CJ Stroud,HOU,bench,20.3,19.0,JAX,1:00 PM,91%,46%
+RB,Nick Chubb,CLE,ir,0.0,0.0,HOU,1:00PM,85%,0%

@@ -65,14 +65,16 @@ export default function ControlsRow({
 
       <div className="ml-auto flex items-center gap-2">
         {phasePill}
+
         {isCommish && canShowPause && (
           <button
             onClick={onTogglePause}
-            className={`rounded-2xl px-3 py-1.5 text-sm border transition-all no-underline font-semibold`}
+            className="rounded-2xl px-3 py-1.5 text-sm border transition-all no-underline font-semibold"
             style={{
+              // Pause = orange, Resume = green
               color: paused ? '#0b3b16' : '#3b2a07',
-              borderColor: paused ? 'rgba(16,185,129,0.6)' : 'rgba(245,158,11,0.6)',
-              background: paused ? 'rgba(16,185,129,0.85)' : 'rgba(245,158,11,0.85)',
+              borderColor: paused ? 'rgba(16,185,129,0.7)' : 'rgba(245,158,11,0.75)',
+              background: paused ? 'rgba(16,185,129,0.9)' : 'rgba(245,158,11,0.9)',
             }}
             aria-label={paused ? 'Resume draft' : 'Pause draft'}
           >
