@@ -20,6 +20,10 @@ const LEAGUE_ABI = [
   { type: 'function', name: 'getTeamByAddress', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'string' }] },
 ] as const;
 
+const rosterKey = (league: `0x${string}`, owner: `0x${string}`, week: number) =>
+  `roster:${league}:${String(owner).toLowerCase()}:${week}`;
+
+
 const ROSTER_ABI = [
   {
     type:'function', name:'getRosterSettings', stateMutability:'view', inputs:[], outputs:[{
@@ -165,8 +169,6 @@ export default function TeamPage(){
   const avatarSrc = mounted ? (profile.logo || EMPTY_SVG) : EMPTY_SVG;
   const showInitials = !mounted || !avatarSrc;
 
-
-  
   /* ---- CSV load ---- */
   const [csvPlayers,setCsvPlayers]=useState<Player[]>([]);
   const [csvSlotByName,setCsvSlotByName]=useState<Map<string,string>>(new Map());
@@ -224,11 +226,48 @@ export default function TeamPage(){
     const iRows:Row[]=[...irPool];
     while(iRows.length<Math.max(1,IR_COUNT)) iRows.push('Empty');
 
-    setStarters(sOrdered);
-    setBench(bRows.slice(0,BENCH_COUNT));
-    setIrList(iRows.slice(0,IR_COUNT));
+    // PERSIST (load): if we have a saved roster for this team/week, prefer it
+    let usedSaved = false;
+    try{
+      if(league && owner){
+        const raw = localStorage.getItem(rosterKey(league as `0x${string}`, owner as `0x${string}`, week));
+        if(raw){
+          const saved = JSON.parse(raw);
+          if(Array.isArray(saved.starters)) { setStarters(saved.starters as Row[]); usedSaved = true; }
+          if(Array.isArray(saved.bench))    { setBench(saved.bench as Row[]); }
+          if(Array.isArray(saved.ir))       { setIrList(saved.ir as Row[]); }
+        }
+      }
+    }catch{}
+
+    if(!usedSaved){
+      setStarters(sOrdered);
+      setBench(bRows.slice(0,BENCH_COUNT));
+      setIrList(iRows.slice(0,IR_COUNT));
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[csvPlayers, STARTERS.join(','), BENCH_COUNT, IR_COUNT]);
+  },[csvPlayers, STARTERS.join(','), BENCH_COUNT, IR_COUNT, league, owner, week]);
+
+  // PERSIST (listen): update if another tab modifies this roster
+  useEffect(()=>{
+    if(!league || !owner) return;
+    const key = rosterKey(league as `0x${string}`, owner as `0x${string}`, week);
+    const onStorage = (e: StorageEvent) => {
+      if(e.key === key || e.key === `${key}:ts`){
+        try{
+          const raw = localStorage.getItem(key);
+          if(raw){
+            const saved = JSON.parse(raw);
+            if(Array.isArray(saved.starters)) setStarters(saved.starters as Row[]);
+            if(Array.isArray(saved.bench))    setBench(saved.bench as Row[]);
+            if(Array.isArray(saved.ir))       setIrList(saved.ir as Row[]);
+          }
+        }catch{}
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return ()=>window.removeEventListener('storage', onStorage);
+  },[league, owner, week]);
 
   /* ---- selection / swaps ---- */
   const [sel,setSel]=useState<{section:'starters'|'bench'|'ir'; index:number}|null>(null);
@@ -242,9 +281,7 @@ export default function TeamPage(){
   // helper: is the selected starter an *empty FLEX*?
   const selIsEmptyFlex = sel?.section==='starters' && STARTERS[sel.index]==='FLEX' && starters[sel.index]==='Empty';
 
-  // Clicking a different pill while one is selected tries the move immediately
   function onPillClick(section:'starters'|'bench'|'ir', index:number){
-    // NEW: If IR pill is being selected and bench is full (no empties), show popup and abort selection
     if(!sel && section==='ir'){
       const hasEmptyBench = bench.some(r=>r==='Empty');
       if(!hasEmptyBench){
@@ -264,28 +301,24 @@ export default function TeamPage(){
   function doSwapOrMove(target:{section:'starters'|'bench'|'ir'; index:number}){
     if(!sel) return;
 
-    // local readers
     const sRow=(section:'starters'|'bench'|'ir', i:number)=> section==='starters'?starters[i]:section==='bench'?bench[i]:irList[i];
 
-    /* ---- IR moves: only to EMPTY bench; clicking starters does nothing ---- */
     if(sel.section==='ir'){
-      if(target.section!=='bench') { return; } // NEW hard guard: IR can only go to bench
+      if(target.section!=='bench') { return; }
       const fromRow=sRow('ir', sel.index); const pPos=rowPos(fromRow);
       if(!pPos || fromRow==='Empty'){ setSel(null); return; }
       const nb=[...bench];
-      if(target.index>=nb.length) nb.push('Empty'); // allow clicking extra empty slot
+      if(target.index>=nb.length) nb.push('Empty');
       const trgRow = nb[target.index];
-      const ok=(trgRow==='Empty'); // just empty bench, no slot constraint
+      const ok=(trgRow==='Empty');
       if(!ok) return;
       nb[target.index]=fromRow as Player;
       const ni=[...irList]; ni[sel.index]='Empty';
       setBench(nb); setIrList(ni); setSel(null); return;
     }
 
-    /* ---- Regular moves ---- */
     const copyS=[...starters], copyB=[...bench];
 
-    // If target is the extra bench row, append it first
     if(target.section==='bench' && target.index>=copyB.length){
       copyB.push('Empty');
     }
@@ -300,7 +333,6 @@ export default function TeamPage(){
     const originSlot:SlotKey = sel.section==='starters' ? STARTERS[sel.index] : (rowPos(fromRow) || 'FLEX');
     const targetSlot:SlotKey = target.section==='starters' ? STARTERS[target.index] : (rowPos(toRow) || 'FLEX');
 
-    // Bench -> Starter
     if(sel.section==='bench' && target.section==='starters'){
       if(fromRow!=='Empty' && !eligible(fromPos,targetSlot)) return;
       fromList[sel.index]=toRow;
@@ -309,18 +341,16 @@ export default function TeamPage(){
       return;
     }
 
-    // Starter -> Bench (only to empty OR same POS)
     if(sel.section==='starters' && target.section==='bench'){
       const samePos = (toRow!=='Empty') && (rowPos(toRow)===fromPos);
       const emptyOk = (toRow==='Empty');
       if(!(samePos || emptyOk)) return;
-      fromList[sel.index]=toRow; // swap with same-pos or move into empty
+      fromList[sel.index]=toRow;
       toList[target.index]=fromRow;
       setStarters(copyS); setBench(copyB); setSel(null);
       return;
     }
 
-    // Starter -> Starter (forward + reverse eligibility)
     if(sel.section==='starters' && target.section==='starters'){
       if(fromRow!=='Empty' && !eligible(fromPos,targetSlot)) return;
       if(toRow!=='Empty'){
@@ -338,7 +368,7 @@ export default function TeamPage(){
     }
   }
 
-  /* ---- totals + write-through ---- */
+  /* ---- totals + scores ---- */
   const startersTotals=useMemo(()=>{
     let score=0, proj=0;
     starters.forEach(r=>{ if(r!=='Empty'){ score+=Number(r.score||0); proj+=Number(r.proj||0); } });
@@ -357,6 +387,17 @@ export default function TeamPage(){
     }catch{}
   },[league,owner,week,startersTotals.score,startersTotals.proj]);
 
+  /* ---------- PERSIST: save lineup whenever it changes (step 3) ---------- */
+  useEffect(()=>{
+    if(!league || !owner) return;
+    try{
+      const key = rosterKey(league as `0x${string}`, owner as `0x${string}`, week);
+      const payload = { starters, bench, ir: irList };
+      localStorage.setItem(key, JSON.stringify(payload));
+      localStorage.setItem(`${key}:ts`, String(Date.now())); // heartbeat for other tabs/pages
+    }catch{}
+  }, [league, owner, week, starters, bench, irList]);
+
   /* ---- activity metrics placeholders ---- */
   const [pendingTrades,setPendingTrades]=useState(0);
   const [waiverClaims,setWaiverClaims]=useState(0);
@@ -367,36 +408,26 @@ export default function TeamPage(){
     baseSlot: SlotKey,
     section: 'starters'|'bench'|'ir',
     index: number,
-    currentRow?: Row,         // pass row to avoid undefined
+    currentRow?: Row,
   ){
     const base='mx-auto w-[86px] rounded-full py-1.5 px-2.5 text-sm font-semibold bg-white/[0.08] hover:bg-white/[0.14] border transition whitespace-nowrap';
-
-    // IR pill itself renders neutral; IR selection highlights only empty bench (handled below)
     if(section==='ir') return `${base} border-white/20`;
 
-    // BENCH pill highlighting:
     if(section==='bench'){
       const row=currentRow ?? bench[index] ?? 'Empty';
-
-      // 1) Starter selected: highlight empty bench or same-POS bench
       if(sel?.section==='starters'){
         const sRow=starters[sel.index];
         const sPos=rowPos(sRow) as Exclude<SlotKey,null> | null;
-
-        // 3) Special case: selected starter is an *empty FLEX* slot → show RB/WR/TE sources
         if(selIsEmptyFlex){
           const rPos=rowPos(row);
           if(rPos && FLEX_SET.has(rPos)) return `${base} ring-1 ${posRing(rPos as any)}`;
           return `${base} border-transparent`;
         }
-
         const isEmpty = row==='Empty';
         const samePos = sPos && !isEmpty && rowPos(row)===sPos;
-        if(sPos && (isEmpty || samePos)) return `${base} ring-1 ${posRing(sPos)}`;
+        if(sPos && (isEmpty || samePos)) return `${base} ring-1 ${posRing(sPos as any)}`;
         return `${base} border-transparent`;
       }
-
-      // 2) Bench selected: border the selected bench pill and all same-POS bench rows
       if(sel?.section==='bench'){
         const selPos=rowPos(bench[sel.index]);
         const isSel = sel.section==='bench' && sel.index===index;
@@ -404,20 +435,15 @@ export default function TeamPage(){
         if(isSel || samePos) return `${base} ring-1 ${selPos ? posRing(selPos as any) : 'ring-white/30 border-white/30'}`;
         return `${base} border-transparent`;
       }
-
-      // 4) IR selected: only empty bench spots open
       if(sel?.section==='ir'){
         const isEmpty=row==='Empty';
         return isEmpty ? `${base} ring-1 ring-rose-400 border-rose-400` : `${base} border-transparent`;
       }
-
       return `${base} border-transparent`;
     }
 
-    // STARTERS pill highlighting:
     if(!sel) return `${base} border-transparent`;
 
-    // 2) Bench selected → highlight starters that accept bench player's POS
     if(sel.section==='bench'){
       const bRow=bench[sel.index];
       const bPos=rowPos(bRow);
@@ -428,7 +454,6 @@ export default function TeamPage(){
       return ok ? `${base} ${posRing((bPos as any)||'WR')}` : `${base} border-transparent`;
     }
 
-    // 3) Empty FLEX selected → highlight starters that can move into FLEX (RB/WR/TE)
     if(selIsEmptyFlex){
       const r=starters[index];
       const rPos=rowPos(r);
@@ -436,7 +461,6 @@ export default function TeamPage(){
       return ok ? `${base} ${posRing((rPos as any)||'WR')}` : `${base} border-transparent`;
     }
 
-    // default: starter selected → valid target (your existing rule)
     const fromRow = sel.section==='starters'?starters[sel.index]:bench[sel.index];
     const fromPos = rowPos(fromRow);
     const ok =
@@ -459,21 +483,11 @@ export default function TeamPage(){
     <main className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white px-6 py-10">
       <div className="mx-auto max-w-6xl space-y-8">
         {/* Title */}
-{/* ===== Top Bar: centered title ===== */}
-{/* <div className="grid grid-cols-3 items-center">
-  <div />
-  <h2 className="justify-self-center text-3xl font-extrabold tracking-tight" style={{ color: ZIMA }}>
-    My Team
-  </h2>
-  <div />
-</div> */}
- 
-{/* ===== Header (team name + wallet + league link) ===== */}
+        {/* ... header and activity layout unchanged ... */}
+
 <header className="pt-2 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <div className="flex items-center gap-4">
-    {/* avatar */}
     <div className="relative h-16 w-16 rounded-2xl overflow-hidden ring-2 ring-white/20 bg-white/5">
-      {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={avatarSrc}
         alt="team logo"
@@ -491,7 +505,6 @@ export default function TeamPage(){
       </span>
     </div>
 
-    {/* name + wallet + league */}
     <div>
       <h1 suppressHydrationWarning className="text-4xl font-extrabold leading-tight">
         {safeTeamName}
@@ -511,57 +524,68 @@ export default function TeamPage(){
       </div>
     </div>
   </div>
-
-  {/* (no buttons here; Add/Cut remain in Activity as requested) */}
   <div />
 </header>
 
+<section>
+  <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-stretch">
+    <div className="sm:col-span-8">
+      <div className="pt-2">
+        {league && owner ? (
+          <CurrentMatchupCard
+            league={league}
+            owner={owner}
+            week={week}
+            variant="team"
+          />
+        ) : (
+          <div className="text-center text-gray-400">
+            Connect a wallet to see your matchup.
+          </div>
+        )}
+      </div>
+    </div>
 
-        {/* Summary row (no borders) */}
-        <section>
-          <div className="grid grid-cols-12 gap-6 items-stretch">
-            <div className="col-span-12 lg:col-span-8">
-              <div className="rounded-2xl bg-white/[0.03] p-5">
-                {league && owner ? <CurrentMatchupCard league={league} owner={owner} week={week} variant="team" /> : <div className="text-center text-gray-400">Connect a wallet to see your matchup.</div>}
+    <div className="sm:col-span-4">
+      <div className="p-2">
+        <div className="grid grid-cols-3 gap-3 items-start">
+          <div className="col-span-2 flex flex-col gap-3">
+            <div className="rounded-xl bg-white/[0.04] p-3 text-center">
+              <div className="text-[11px] uppercase tracking-wide text-gray-400 leading-none">
+                <div>Pending</div>
+                <div>Trades</div>
               </div>
+              <div className="mt-1 text-xl font-extrabold">{pendingTrades}</div>
             </div>
 
-            {/* Activity with wider metrics + narrower Add/Cut (ADDED widths) */}
-            <div className="col-span-12 lg:col-span-4">
-              <aside className="rounded-2xl bg-white/[0.03]">
-                <div className="p-4 flex flex-col lg:h-full">
-                  <div className="text-sm font-semibold mb-3" style={{ color: ZIMA }}>Activity</div>
-
-                  {/* grid widened: 5 cols -> 2+2+1 spans */}
-                  <div className="grid grid-cols-5 gap-3 items-stretch">
-                    <Link
-                      href={`/league/${league}/trades`}
-                      className="group rounded-xl bg-white/[0.04] hover:bg-white/[0.07] transition p-4 flex flex-col items-center justify-center text-center col-span-2"
-                    >
-                      <div className="text-[11px] uppercase tracking-wide text-gray-400 whitespace-nowrap">Pending Trades</div>
-                      <div className="mt-1 text-2xl font-extrabold">{pendingTrades}</div>
-                      <div className="mt-2 text-xs text-gray-400 group-hover:text-gray-300">View history →</div>
-                    </Link>
-
-                    <Link
-                      href={`/league/${league}/claims`}
-                      className="group rounded-xl bg-white/[0.04] hover:bg-white/[0.07] transition p-4 flex flex-col items-center justify-center text-center col-span-2"
-                    >
-                      <div className="text-[11px] uppercase tracking-wide text-gray-400 whitespace-nowrap">Waiver Claims</div>
-                      <div className="mt-1 text-2xl font-extrabold">{waiverClaims}</div>
-                      <div className="mt-2 text-xs text-gray-400 group-hover:text-gray-300">View history →</div>
-                    </Link>
-
-                    <div className="flex flex-col justify-stretch gap-2 items-stretch col-span-1">
-                      <Link href={`/league/${league}/claims/add`} className="rounded-lg text-sm bg-emerald-700/40 hover:bg-emerald-700/55 px-2 py-1.5 text-center font-semibold border border-emerald-500/40">Add</Link>
-                      <Link href={`/league/${league}/claims/cut`} className="rounded-lg text-sm bg-rose-700/40 hover:bg-rose-700/55 px-2 py-1.5 text-center font-semibold border border-rose-500/40">Cut</Link>
-                    </div>
-                  </div>
-                </div>
-              </aside>
+            <div className="rounded-xl bg-white/[0.04] p-3 text-center">
+              <div className="text-[11px] uppercase tracking-wide text-gray-400 leading-none">
+                <div>Waiver</div>
+                <div>Claims</div>
+              </div>
+              <div className="mt-1 text-xl font-extrabold">{waiverClaims}</div>
             </div>
           </div>
-        </section>
+
+          <div className="col-span-1 flex flex-col gap-2">
+            <Link
+              href={`/league/${league}/claims/add`}
+              className="rounded-lg text-sm bg-emerald-700/40 hover:bg-emerald-700/55 px-3 py-2 text-center font-semibold border border-emerald-500/40"
+            >
+              Add
+            </Link>
+            <Link
+              href={`/league/${league}/claims/cut`}
+              className="rounded-lg text-sm bg-rose-700/40 hover:bg-rose-700/55 px-3 py-2 text-center font-semibold border border-rose-500/40"
+            >
+              Cut
+            </Link>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
         {/* Week/Schedule/Deadline */}
         <section className="grid grid-cols-3 items-center mb-6 sm:mb-8 lg:mb-10">
@@ -601,7 +625,7 @@ export default function TeamPage(){
 
           {STARTERS.map((slotLabel, idx)=>{
             const r=starters[idx]; const isPlayer=!!r && r!=='Empty';
-            const over = isPlayer && typeof (r as any).score === 'number' && typeof (r as any).proj === 'number' && (r as any).score > (r as any).proj; // NEW: over/under
+            const over = isPlayer && typeof (r as any).score === 'number' && typeof (r as any).proj === 'number' && (r as any).score > (r as any).proj;
             return (
               <div key={`${slotLabel}-${idx}`} className="grid grid-cols-12">
                 <div className="col-span-2 px-2 py-3 text-center font-semibold">
@@ -620,7 +644,6 @@ export default function TeamPage(){
                     </div>
                   )}
                 </div>
-                {/* NEW: Score green when > proj */}
                 <div className={cn("col-span-1 px-1 py-3 tabular-nums font-bold whitespace-nowrap", over && "text-emerald-400")}>
                   {!isPlayer?'—':Number((r as any).score ?? 0).toFixed(1)}
                 </div>
@@ -633,7 +656,7 @@ export default function TeamPage(){
             );
           })}
 
-          {/* TOTAL row — score/proj in their columns, proj smaller & not bold */}
+          {/* TOTAL row */}
           <div className="grid grid-cols-12 items-center border-t border-white/10">
             <div className="col-span-2 px-2 py-3 text-center font-semibold text-gray-300">TOTAL</div>
             <div className="col-span-3 md:col-span-4 px-2 py-3"></div>
@@ -662,7 +685,7 @@ export default function TeamPage(){
           </div>
 
           {(() => {
-            const extra = sel?.section==='starters' ? 1 : 0; // extra drop slot when a starter is selected
+            const extra = sel?.section==='starters' ? 1 : 0;
             const rows=[...bench, ...Array.from({length:extra},()=> 'Empty' as Row)];
             return rows.map((r,i)=>{
               const isPlayer=!!r && r!=='Empty';
@@ -695,7 +718,7 @@ export default function TeamPage(){
             });
           })()}
 
-          {/* IR rows (letters red, pill neutral) */}
+          {/* IR rows */}
           {irList.map((r, idx)=>{
             const isPlayer=!!r && r!=='Empty';
             return (
@@ -718,7 +741,6 @@ export default function TeamPage(){
         </section>
       </div>
 
-      {/* tiny toast */}
       {note && (
         <div className="fixed left-1/2 bottom-6 -translate-x-1/2 z-[9999]">
           <div className="rounded-full bg-black/80 text-white text-sm px-4 py-2 border border-white/15 shadow-lg">
