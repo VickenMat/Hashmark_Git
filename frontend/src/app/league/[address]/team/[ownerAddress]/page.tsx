@@ -467,7 +467,7 @@ export default function TeamPage(){
   </h2>
   <div />
 </div> */}
-
+ 
 {/* ===== Header (team name + wallet + league link) ===== */}
 <header className="pt-2 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
   <div className="flex items-center gap-4">
